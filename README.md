@@ -61,9 +61,10 @@ memoq list --visibility PUBLIC --offset 50 --json
 # read one note
 memoq get <uid> --json
 
-# create (body from --content or stdin; --tag is repeatable; --visibility defaults to PRIVATE)
+# create (body from --content or stdin; --tag / --attach are repeatable; --visibility defaults to PRIVATE)
 memoq create --content "Ship notes: cut RC on Friday" --tag release --tag ops
 echo "multi-line body" | memoq create --tag inbox
+memoq create --content "Design review" --attach ./diagram.png --attach ./notes.pdf
 
 # update / delete
 memoq update <uid> --content "revised body" --visibility PROTECTED
@@ -170,6 +171,13 @@ landed (`+` downloaded, `=` already present, `-` external link not downloaded).
 With `--json`, parse the `local_path` field and Read that path directly. The
 bearer token is attached to the download so PRIVATE/PROTECTED attachments work;
 externally-linked attachments are recorded but not downloaded.
+
+`memoq create --attach <path>` uploads a local file and associates it directly
+with the newly created memo; repeat `--attach` for multiple files. Memos receives
+attachment bytes as JSON base64, not multipart upload. Large files remain subject
+to the instance upload limit (32 MiB by default when the server has no configured
+limit). If an attachment upload fails after the memo is created, the command
+reports the created memo UID and does not delete it.
 
 ## Layout
 

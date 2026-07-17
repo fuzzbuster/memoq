@@ -98,6 +98,7 @@ cache immediately (no wait for the next sync).
 
 ```bash
 memoq create --content "Ship notes: cut RC on Friday" --tag release --tag ops --visibility PRIVATE
+memoq create --content "Review assets" --attach ./diagram.png --attach ./notes.pdf
 # or pipe the body via stdin:
 echo "multi-line body" | memoq create --tag inbox
 ```
@@ -105,7 +106,13 @@ echo "multi-line body" | memoq create --tag inbox
 - Body comes from `--content`, else from stdin. Empty body is rejected.
 - `--tag` is repeatable; each is appended to the body as a Memos-style `#hashtag` so the
   server indexes it. `--visibility` defaults to `PRIVATE`.
-- Prints `created <uid>` (or `{"uid": "..."}` with `--json`).
+- `--attach <path>` is repeatable. Each local file is uploaded and associated directly with
+  the newly created memo, in argument order.
+- Uploads use Memos' JSON bytes field (base64), not multipart. File size is limited by the
+  Memos instance setting; its server-side default is 32 MiB when no limit is configured.
+- If an upload fails after memo creation, the error includes the created memo UID. The memo
+  is retained and already-uploaded attachments are not rolled back.
+- Prints `created <uid>` (or `{"uid": "...", "attachments": [...]}` with `--json`).
 
 ### Update
 

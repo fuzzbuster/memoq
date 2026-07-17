@@ -369,6 +369,45 @@ func parseRawQuery(raw string) (map[string]string, error) {
 
 // --- attachments ------------------------------------------------------------
 
+func TestCreateAttachment(t *testing.T) {
+	c, cap := mockServer(t, 200, `{
+		"name":"attachments/42",
+		"filename":"report.pdf",
+		"type":"application/pdf",
+		"size":"3",
+		"memo":"memos/m1"
+	}`)
+	attachment, err := c.CreateAttachment(
+		context.Background(),
+		"m1",
+		"report.pdf",
+		"application/pdf",
+		[]byte{1, 2, 3},
+	)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/v1/attachments" {
+		t.Errorf("request = %s %s, want POST /api/v1/attachments", cap.method, cap.path)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(cap.body), &body); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if body["filename"] != "report.pdf" || body["type"] != "application/pdf" {
+		t.Errorf("attachment metadata = %#v", body)
+	}
+	if body["memo"] != "memos/m1" {
+		t.Errorf("memo = %q, want memos/m1", body["memo"])
+	}
+	if body["content"] != "AQID" {
+		t.Errorf("content = %q, want base64 AQID", body["content"])
+	}
+	if attachment.IDValue() != "42" || attachment.Size != 3 || attachment.MemoUID() != "m1" {
+		t.Errorf("attachment = %+v", attachment)
+	}
+}
+
 func TestAttachmentIDAndMemoUID(t *testing.T) {
 	a := &Attachment{Name: "attachments/42", Memo: "memos/xyz"}
 	if a.IDValue() != "42" {

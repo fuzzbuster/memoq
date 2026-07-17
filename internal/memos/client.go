@@ -334,6 +334,24 @@ func (c *Client) Ping(ctx context.Context) error {
 // PROTECTED attachments require the bearer token; PUBLIC ones ignore it. The
 // client always sends the token when present, so all three work.
 
+// CreateAttachment uploads content as an attachment directly associated with
+// memoUID. The Memos v1 JSON API encodes the bytes field as base64.
+func (c *Client) CreateAttachment(ctx context.Context, memoUID, filename, mimeType string, content []byte) (*Attachment, error) {
+	reqBody := map[string]any{
+		"filename": filename,
+		"content":  content,
+		"memo":     "memos/" + memoUID,
+	}
+	if mimeType != "" {
+		reqBody["type"] = mimeType
+	}
+	var attachment Attachment
+	if err := c.do(ctx, methodPost, "/api/v1/attachments", reqBody, &attachment); err != nil {
+		return nil, err
+	}
+	return &attachment, nil
+}
+
 // Attachment mirrors the metadata subset of a Memos attachment resource.
 type Attachment struct {
 	Name         string     `json:"name"`         // "attachments/{id}"

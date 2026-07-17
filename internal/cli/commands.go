@@ -5,11 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/example/memoq/internal/config"
+	"github.com/example/memoq/internal/memos"
 	"github.com/example/memoq/internal/store"
 	"github.com/example/memoq/internal/syncer"
 )
@@ -154,7 +157,9 @@ func cmdCreate(args []string) error {
 	content := fs.String("content", "", "note content (else read from stdin)")
 	vis := fs.String("visibility", "PRIVATE", "PUBLIC/PRIVATE/PROTECTED")
 	var tags multiFlag
+	var attachments multiFlag
 	fs.Var(&tags, "tag", "tag to append as #tag (repeatable)")
+	fs.Var(&attachments, "attach", "local file to attach (repeatable)")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -197,8 +202,39 @@ func cmdCreate(args []string) error {
 		UpdatedTime: nowOr(rm.UpdateTime),
 		ContentHash: rm.ContentMD5(),
 	})
+	uploaded := make([]*memos.Attachment, 0, len(attachments))
+	for _, path := range attachments {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("created memo %s but cannot read attachment %q: %w", rm.UIDValue(), path, err)
+		}
+		filename := filepath.Base(path)
+		attachment, err := cl.CreateAttachment(
+			context.Background(),
+			rm.UIDValue(),
+			filename,
+			mime.TypeByExtension(filepath.Ext(filename)),
+			content,
+		)
+		if err != nil {
+			return fmt.Errorf("created memo %s but cannot upload attachment %q: %w", rm.UIDValue(), path, err)
+		}
+		uploaded = append(uploaded, attachment)
+		_ = a.store.UpsertAttachment(&store.Attachment{
+			UID:          attachment.IDValue(),
+			MemoUID:      rm.UIDValue(),
+			Filename:     attachment.Filename,
+			Type:         attachment.Type,
+			Size:         attachment.Size,
+			ExternalLink: attachment.ExternalLink,
+			CreatedTime:  nowOr(attachment.CreateTime),
+		})
+	}
 	if *asJSON {
-		return printJSON(map[string]string{"uid": rm.UIDValue()})
+		return printJSON(struct {
+			UID         string              `json:"uid"`
+			Attachments []*memos.Attachment `json:"attachments,omitempty"`
+		}{UID: rm.UIDValue(), Attachments: uploaded})
 	}
 	fmt.Printf("created %s\n", rm.UIDValue())
 	return nil
