@@ -1,6 +1,8 @@
 # ---- Go build artifacts ----------------------------------------------------
 # The compiled binary (produced by `go build -o memoq .`) and test outputs.
 /memoq
+/bin/
+/.trae
 *.exe
 *.exe~
 *.dll
