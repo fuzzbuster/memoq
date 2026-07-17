@@ -24,6 +24,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/example/memoq/internal/syncer"
 )
 
 const (
@@ -140,6 +142,9 @@ type apiFlags struct {
 	bodyFile string
 	fields   kvFlag
 	queries  kvFlag
+	dryRun   bool
+	yes      bool
+	sync     bool
 }
 
 func (f *apiFlags) register(fs *flag.FlagSet) {
@@ -147,6 +152,9 @@ func (f *apiFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.bodyFile, "body-file", "", "read JSON request body from a file ('-' for stdin)")
 	fs.Var(&f.fields, "field", "body field as key=value (repeatable; value JSON-parsed, string fallback)")
 	fs.Var(&f.queries, "query", "query param as key=value (repeatable)")
+	fs.BoolVar(&f.dryRun, "dry-run", false, "preview without sending the request")
+	fs.BoolVar(&f.yes, "yes", false, "confirm destructive operation")
+	fs.BoolVar(&f.sync, "sync", false, "sync the local memo cache after success")
 }
 
 // buildBody assembles the request body from --body / --body-file / --field.
@@ -231,7 +239,7 @@ func readAllStdin() ([]byte, error) {
 // pretty-printed JSON response to stdout. This is the single choke point every
 // resource verb funnels through. It is a package variable so tests can stub it
 // to capture the constructed method/path/body without touching the network.
-var runAPI = func(method, path string, body any) error {
+var runAPI = func(method, path string, body any, syncCache bool) error {
 	a, err := openApp()
 	if err != nil {
 		return err
@@ -244,6 +252,12 @@ var runAPI = func(method, path string, body any) error {
 	raw, err := cl.Do(context.Background(), method, path, body)
 	if err != nil {
 		return err
+	}
+	if syncCache {
+		sy := syncer.New(cl, a.store)
+		if _, err := sy.Sync(context.Background()); err != nil {
+			warnCache(err)
+		}
 	}
 	return printRawJSON(raw)
 }
@@ -278,33 +292,35 @@ const (
 )
 
 type resourceVerbSpec struct {
-	Names   []string
-	Method  string
-	Args    resourceArgMode
-	Body    bool
-	Path    func([]string) string
-	Handler func([]string) error
+	Names         []string
+	Method        string
+	Args          resourceArgMode
+	Body          bool
+	Confirm       bool
+	SyncMemoCache bool
+	Path          func([]string) string
+	Handler       func([]string) error
 }
 
 var resourceVerbSpecs = map[string][]resourceVerbSpec{
 	"memo": {
 		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/memos")),
 		verb("get", methodGet, argsOne, false, onePath("/api/v1/memos/", "")),
-		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/memos")),
-		verb("update", methodPatch, argsOne, true, onePath("/api/v1/memos/", "")),
-		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/memos/", "")),
+		cacheVerb("create", methodPost, argsAny, true, false, fixedPath("/api/v1/memos")),
+		cacheVerb("update", methodPatch, argsOne, true, false, onePath("/api/v1/memos/", "")),
+		cacheVerb("delete", methodDelete, argsOne, false, true, onePath("/api/v1/memos/", "")),
 		verb("comments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/comments")),
 		verb("comment", methodPost, argsOne, true, onePath("/api/v1/memos/", "/comments")),
 		verb("relations", methodGet, argsOne, false, onePath("/api/v1/memos/", "/relations")),
 		verb("set-relations", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/relations")),
 		verb("reactions", methodGet, argsOne, false, onePath("/api/v1/memos/", "/reactions")),
 		verb("react", methodPost, argsOne, true, onePath("/api/v1/memos/", "/reactions")),
-		verb("unreact", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/reactions/", "")),
+		dangerousVerb("unreact", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/reactions/", "")),
 		verb("attachments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/attachments")),
 		verb("set-attachments", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/attachments")),
 		verb("shares", methodGet, argsOne, false, onePath("/api/v1/memos/", "/shares")),
-		verb("share", methodPost, argsOne, true, onePath("/api/v1/memos/", "/shares")),
-		verb("unshare", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/shares/", "")),
+		dangerousVerb("share", methodPost, argsOne, true, onePath("/api/v1/memos/", "/shares")),
+		dangerousVerb("unshare", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/shares/", "")),
 		verb("link-metadata", methodGet, argsAny, false, fixedPath("/api/v1/memos/-/linkMetadata")),
 	},
 	"attachment": {
@@ -313,23 +329,23 @@ var resourceVerbSpecs = map[string][]resourceVerbSpec{
 		verb("get", methodGet, argsOne, false, onePath("/api/v1/attachments/", "")),
 		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/attachments")),
 		verb("update", methodPatch, argsOne, true, onePath("/api/v1/attachments/", "")),
-		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/attachments/", "")),
-		verb("batch-delete", methodPost, argsAny, true, fixedPath("/api/v1/attachments:batchDelete")),
+		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/v1/attachments/", "")),
+		dangerousVerb("batch-delete", methodPost, argsAny, true, fixedPath("/api/v1/attachments:batchDelete")),
 	},
 	"user": {
 		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/users")),
 		verb("get", methodGet, argsOne, false, onePath("/api/v1/users/", "")),
 		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/users")),
 		verb("update", methodPatch, argsOne, true, onePath("/api/v1/users/", "")),
-		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/users/", "")),
+		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/v1/users/", "")),
 		verb("all-stats", methodGet, argsAny, false, fixedPath("/api/v1/users:stats")),
 		verb("stats", methodGet, argsOne, false, onePath("/api/v1/users/", ":getStats")),
 		verb("settings", methodGet, argsOne, false, onePath("/api/v1/users/", "/settings")),
 		verb("setting", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/settings/", "")),
-		verb("update-setting", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/settings/", "")),
+		dangerousVerb("update-setting", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/settings/", "")),
 		verb("tokens", methodGet, argsOne, false, onePath("/api/v1/users/", "/personalAccessTokens")),
 		verb("create-token", methodPost, argsOne, true, onePath("/api/v1/users/", "/personalAccessTokens")),
-		verb("delete-token", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/personalAccessTokens/", "")),
+		dangerousVerb("delete-token", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/personalAccessTokens/", "")),
 		verb("webhooks", methodGet, argsOne, false, onePath("/api/v1/users/", "/webhooks")),
 	},
 	"auth": {
@@ -343,12 +359,12 @@ var resourceVerbSpecs = map[string][]resourceVerbSpec{
 		verb("get", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
 		verb("create", methodPost, argsOne, true, onePath("/api/v1/users/", "/shortcuts")),
 		verb("update", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/shortcuts/", "")),
-		verb("delete", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
+		dangerousVerb("delete", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
 	},
 	"instance": {
 		verb("profile", methodGet, argsAny, false, fixedPath("/api/v1/instance/profile")),
 		verb("setting", methodGet, argsOptionalOne, false, optionalOnePath("/api/v1/instance/settings", "/api/v1/instance/settings/")),
-		verb("update-setting", methodPatch, argsOne, true, onePath("/api/v1/instance/settings/", "")),
+		dangerousVerb("update-setting", methodPatch, argsOne, true, onePath("/api/v1/instance/settings/", "")),
 		verb("stats", methodGet, argsAny, false, fixedPath("/api/v1/instance/stats")),
 	},
 	"ai": {
@@ -362,6 +378,19 @@ func verb(name, method string, args resourceArgMode, body bool, path func([]stri
 
 func aliasVerb(names []string, method string, args resourceArgMode, body bool, path func([]string) string) resourceVerbSpec {
 	return resourceVerbSpec{Names: names, Method: method, Args: args, Body: body, Path: path}
+}
+
+func dangerousVerb(name, method string, args resourceArgMode, body bool, path func([]string) string) resourceVerbSpec {
+	spec := verb(name, method, args, body, path)
+	spec.Confirm = true
+	return spec
+}
+
+func cacheVerb(name, method string, args resourceArgMode, body, confirm bool, path func([]string) string) resourceVerbSpec {
+	spec := verb(name, method, args, body, path)
+	spec.Confirm = confirm
+	spec.SyncMemoCache = true
+	return spec
 }
 
 func handlerVerb(name string, handler func([]string) error) resourceVerbSpec {
@@ -412,7 +441,22 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 			return err
 		}
 	}
-	return runAPI(spec.Method, spec.Path(pos)+af.queryString(), body)
+	path := spec.Path(pos) + af.queryString()
+	if af.dryRun {
+		return printJSON(dryRunResult{
+			DryRun:      true,
+			Operation:   name,
+			Resource:    resource,
+			Method:      spec.Method,
+			Path:        path,
+			Body:        body,
+			CachePolicy: cachePolicy(spec.SyncMemoCache),
+		})
+	}
+	if spec.Confirm && !af.yes {
+		return confirmationRequired(resource + " " + name)
+	}
+	return runAPI(spec.Method, path, body, spec.SyncMemoCache || af.sync)
 }
 
 func validateResourceArgs(resource, name string, mode resourceArgMode, pos []string) error {
@@ -486,7 +530,40 @@ func cmdAPI(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runAPI(method, path+af.queryString(), body)
+	path += af.queryString()
+	if af.dryRun {
+		return printJSON(dryRunResult{
+			DryRun:      true,
+			Operation:   strings.ToLower(method),
+			Resource:    "api",
+			Method:      method,
+			Path:        path,
+			Body:        body,
+			CachePolicy: cachePolicy(af.sync),
+		})
+	}
+	if requiresAPIConfirmation(method, path) && !af.yes {
+		return confirmationRequired(method + " " + path)
+	}
+	return runAPI(method, path, body, af.sync)
+}
+
+func cachePolicy(syncCache bool) string {
+	if syncCache {
+		return "sync"
+	}
+	return "unchanged"
+}
+
+func requiresAPIConfirmation(method, path string) bool {
+	if method == methodDelete {
+		return true
+	}
+	if strings.Contains(path, ":batchDelete") || strings.Contains(path, "/shares") {
+		return true
+	}
+	return method == methodPatch &&
+		(strings.Contains(path, "/instance/settings/") || strings.Contains(path, "/users/") && strings.Contains(path, "/settings/"))
 }
 
 // ---- memo resource ---------------------------------------------------------

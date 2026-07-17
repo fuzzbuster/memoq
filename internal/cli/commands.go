@@ -154,6 +154,7 @@ func cmdGet(args []string) error {
 func cmdCreate(args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
+	dryRun := fs.Bool("dry-run", false, "preview without creating the note")
 	content := fs.String("content", "", "note content (else read from stdin)")
 	vis := fs.String("visibility", "PRIVATE", "PUBLIC/PRIVATE/PROTECTED")
 	var tags multiFlag
@@ -176,6 +177,15 @@ func cmdCreate(args []string) error {
 		t = strings.TrimPrefix(t, "#")
 		body += "\n#" + t
 	}
+	if *dryRun {
+		return printJSON(dryRunResult{
+			DryRun:      true,
+			Operation:   "create",
+			Resource:    "memo",
+			Body:        map[string]any{"content": body, "visibility": *vis, "attachments": append([]string{}, attachments...)},
+			CachePolicy: "update",
+		})
+	}
 
 	a, err := openApp()
 	if err != nil {
@@ -190,9 +200,10 @@ func cmdCreate(args []string) error {
 	if err != nil {
 		return err
 	}
+	cacheStatus := "updated"
 	// Reflect immediately into local cache (dynamic freshness without waiting
 	// for the next sync).
-	_ = a.store.Upsert(&store.Memo{
+	if err := a.store.Upsert(&store.Memo{
 		UID:         rm.UIDValue(),
 		Content:     rm.Content,
 		Tags:        rm.TagList(),
@@ -201,7 +212,10 @@ func cmdCreate(args []string) error {
 		CreatedTime: nowOr(rm.CreateTime),
 		UpdatedTime: nowOr(rm.UpdateTime),
 		ContentHash: rm.ContentMD5(),
-	})
+	}); err != nil {
+		cacheStatus = "stale"
+		warnCache(err)
+	}
 	uploaded := make([]*memos.Attachment, 0, len(attachments))
 	for _, path := range attachments {
 		content, err := os.ReadFile(path)
@@ -220,7 +234,7 @@ func cmdCreate(args []string) error {
 			return fmt.Errorf("created memo %s but cannot upload attachment %q: %w", rm.UIDValue(), path, err)
 		}
 		uploaded = append(uploaded, attachment)
-		_ = a.store.UpsertAttachment(&store.Attachment{
+		if err := a.store.UpsertAttachment(&store.Attachment{
 			UID:          attachment.IDValue(),
 			MemoUID:      rm.UIDValue(),
 			Filename:     attachment.Filename,
@@ -228,13 +242,18 @@ func cmdCreate(args []string) error {
 			Size:         attachment.Size,
 			ExternalLink: attachment.ExternalLink,
 			CreatedTime:  nowOr(attachment.CreateTime),
-		})
+		}); err != nil {
+			cacheStatus = "stale"
+			warnCache(err)
+		}
 	}
 	if *asJSON {
-		return printJSON(struct {
-			UID         string              `json:"uid"`
-			Attachments []*memos.Attachment `json:"attachments,omitempty"`
-		}{UID: rm.UIDValue(), Attachments: uploaded})
+		return printJSON(writeResult{
+			Operation:   "create",
+			UID:         rm.UIDValue(),
+			CacheStatus: cacheStatus,
+			Attachments: uploaded,
+		})
 	}
 	fmt.Printf("created %s\n", rm.UIDValue())
 	return nil
@@ -245,6 +264,7 @@ func cmdCreate(args []string) error {
 func cmdUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
+	dryRun := fs.Bool("dry-run", false, "preview without updating the note")
 	content := fs.String("content", "", "new content")
 	vis := fs.String("visibility", "", "new visibility")
 	pos, err := parseArgs(fs, args)
@@ -258,6 +278,23 @@ func cmdUpdate(args []string) error {
 		return fmt.Errorf("nothing to update (pass --content and/or --visibility)")
 	}
 	uid := pos[0]
+	if *dryRun {
+		body := map[string]string{}
+		if *content != "" {
+			body["content"] = *content
+		}
+		if *vis != "" {
+			body["visibility"] = *vis
+		}
+		return printJSON(dryRunResult{
+			DryRun:      true,
+			Operation:   "update",
+			Resource:    "memo",
+			UID:         uid,
+			Body:        body,
+			CachePolicy: "update",
+		})
+	}
 	a, err := openApp()
 	if err != nil {
 		return err
@@ -271,7 +308,8 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = a.store.Upsert(&store.Memo{
+	cacheStatus := "updated"
+	if err := a.store.Upsert(&store.Memo{
 		UID:         rm.UIDValue(),
 		Content:     rm.Content,
 		Tags:        rm.TagList(),
@@ -280,9 +318,12 @@ func cmdUpdate(args []string) error {
 		CreatedTime: nowOr(rm.CreateTime),
 		UpdatedTime: nowOr(rm.UpdateTime),
 		ContentHash: rm.ContentMD5(),
-	})
+	}); err != nil {
+		cacheStatus = "stale"
+		warnCache(err)
+	}
 	if *asJSON {
-		return printJSON(map[string]string{"uid": rm.UIDValue()})
+		return printJSON(writeResult{Operation: "update", UID: rm.UIDValue(), CacheStatus: cacheStatus})
 	}
 	fmt.Printf("updated %s\n", rm.UIDValue())
 	return nil
@@ -292,6 +333,9 @@ func cmdUpdate(args []string) error {
 
 func cmdDelete(args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	dryRun := fs.Bool("dry-run", false, "preview without deleting the note")
+	yes := fs.Bool("yes", false, "confirm destructive operation")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -300,6 +344,18 @@ func cmdDelete(args []string) error {
 		return fmt.Errorf("usage: memoq delete <uid>")
 	}
 	uid := pos[0]
+	if *dryRun {
+		return printJSON(dryRunResult{
+			DryRun:      true,
+			Operation:   "delete",
+			Resource:    "memo",
+			UID:         uid,
+			CachePolicy: "delete",
+		})
+	}
+	if !*yes {
+		return confirmationRequired("delete memo " + uid)
+	}
 	a, err := openApp()
 	if err != nil {
 		return err
@@ -312,7 +368,19 @@ func cmdDelete(args []string) error {
 	if err := cl.Delete(context.Background(), uid); err != nil {
 		return err
 	}
-	_ = a.store.Delete(uid)
+	cacheStatus := "updated"
+	if err := a.store.Delete(uid); err != nil {
+		cacheStatus = "stale"
+		warnCache(err)
+	}
+	if *asJSON {
+		return printJSON(writeResult{
+			Operation:   "delete",
+			UID:         uid,
+			Deleted:     true,
+			CacheStatus: cacheStatus,
+		})
+	}
 	fmt.Printf("deleted %s\n", uid)
 	return nil
 }

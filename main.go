@@ -9,15 +9,15 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/example/memoq/internal/cli"
 )
 
 func main() {
-	if err := cli.Run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "memoq: "+err.Error())
+	args := os.Args[1:]
+	if err := cli.Run(args); err != nil {
+		cli.WriteError(err, args)
 		os.Exit(1)
 	}
 }

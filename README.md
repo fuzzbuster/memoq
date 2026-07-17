@@ -14,8 +14,8 @@ Requires Go 1.24+. Build a single self-contained binary (~15 MB, pure Go, no
 CGO), then put it on your `PATH`:
 
 ```bash
-go build -o memoq .
-mv memoq ~/bin/            # any directory on your PATH
+make build
+mv bin/memoq ~/bin/        # any directory on your PATH
 ```
 
 ## Configure (one-time)
@@ -68,7 +68,8 @@ memoq create --content "Design review" --attach ./diagram.png --attach ./notes.p
 
 # update / delete
 memoq update <uid> --content "revised body" --visibility PROTECTED
-memoq delete <uid>
+memoq delete <uid> --dry-run --json
+memoq delete <uid> --yes --json
 
 # overview + tag counts (handy to discover which tags exist before list --tag)
 memoq stats --json
@@ -87,6 +88,12 @@ Notes:
 - An `auto-sync skipped (...)` line on **stderr** is non-fatal: the network/auth
   failed but the local cache is still served. Only a non-zero exit is a real
   failure.
+- `create` and `update` are high-frequency operations and run directly. Add
+  `--dry-run` only when you want to preview them.
+- Destructive operations never prompt. Preview them with `--dry-run`, obtain
+  confirmation, then execute with `--yes`.
+- `create`, `update`, and `delete` support `--json` and return a consistent
+  result containing `operation`, `uid`, and `cache_status`.
 
 ### Full-API resource commands (direct to server, raw JSON out)
 
@@ -113,26 +120,51 @@ Supply request bodies / query params with:
 | `--body-file <path\|->` | JSON body from a file (`-` = stdin) |
 | `--field k=v` | Body field, repeatable (value is JSON-parsed, string fallback) |
 | `--query k=v` | Query parameter, repeatable |
+| `--dry-run` | Print the planned request without sending it |
+| `--yes` | Confirm a destructive operation |
+| `--sync` | Sync the local memo cache after a successful request |
 
 ```bash
 # typed resource verbs
 memoq memo list --query pageSize=10 --query state=NORMAL
 memoq memo create --field content='hi' --field visibility=PRIVATE
 memoq memo update <uid> --field pinned=true --query updateMask=pinned
+memoq memo delete <uid> --dry-run
+memoq memo delete <uid> --yes
 memoq user get me
 memoq instance profile
 
 # generic escape hatch — reaches any endpoint, current or future
 memoq api GET  /api/v1/memos --query pageSize=10
 memoq api POST /api/v1/memos --field content='hello' --field visibility=PRIVATE
-memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned
+memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
 ```
 
 Run any group with no verb (e.g. `memoq user`) to print its verb list.
 
-> Resource / `api` commands do **not** touch the local cache — they neither
-> auto-sync nor reflect their writes into it. After a mutating resource command
-> you also want cached locally, run `memoq sync`.
+> `memo create`, `memo update`, and `memo delete` sync the local memo cache after
+> success. Other resource commands leave it unchanged. Generic `api` calls only
+> sync when `--sync` is supplied. A cache-sync failure after a successful remote
+> write is reported on stderr without converting the completed write into a
+> command failure; run `memoq sync` to repair the stale cache.
+
+### Safe automation
+
+`memoq` remains fully non-interactive. `create` and `update` execute immediately
+because they are frequent and recoverable. Destructive or high-impact commands
+such as delete, batch-delete, share/unshare, token deletion, and user/instance
+setting changes require `--yes`.
+
+```bash
+# Preview: no network request and no local mutation.
+memoq delete <uid> --dry-run --json
+
+# Execute only after the user approves the exact preview.
+memoq delete <uid> --yes --json
+```
+
+Resource commands always produce JSON, including structured JSON errors.
+Fast commands produce structured errors on stderr when `--json` is present.
 
 ### HTTP debugging
 

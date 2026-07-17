@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/example/memoq/internal/config"
@@ -118,6 +119,24 @@ func TestParseDate(t *testing.T) {
 	}
 	if _, err := parseDate("nonsense", false); err == nil {
 		t.Error("expected error for malformed date")
+	}
+}
+
+func TestFastWriteDryRunAndConfirmation(t *testing.T) {
+	if err := cmdCreate([]string{"--content", "hello", "--dry-run"}); err != nil {
+		t.Fatalf("create dry-run: %v", err)
+	}
+	if err := cmdUpdate([]string{"abc", "--content", "hello", "--dry-run"}); err != nil {
+		t.Fatalf("update dry-run: %v", err)
+	}
+	if err := cmdDelete([]string{"abc", "--dry-run"}); err != nil {
+		t.Fatalf("delete dry-run: %v", err)
+	}
+
+	err := cmdDelete([]string{"abc"})
+	var ce *cliError
+	if !errors.As(err, &ce) || ce.Code != "confirmation_required" {
+		t.Fatalf("delete error = %v, want confirmation_required", err)
 	}
 }
 

@@ -71,7 +71,7 @@ func legacyCommand(use, short string, run func([]string) error) *cobra.Command {
 func resourceCommand(spec resourceGroupSpec) *cobra.Command {
 	long := fmt.Sprintf("%s\n\nVerbs: %s", spec.Short, strings.Join(resourceVerbs(spec.Name), " "))
 	if spec.Name != "api" {
-		long += "\n\nFlags: --body, --body-file, --field, --query"
+		long += "\n\nFlags: --body, --body-file, --field, --query, --dry-run, --yes, --sync"
 	}
 	return &cobra.Command{
 		Use:                spec.Use,
@@ -104,7 +104,7 @@ Resource commands follow the lark-cli-style shape:
   memoq <resource> <verb> [positional] [flags]
 
 Shared resource flags:
-  --body, --body-file, --field, --query
+  --body, --body-file, --field, --query, --dry-run, --yes, --sync
 
 Data lives under $MEMOQ_HOME (default ~/.memoq).`
 }

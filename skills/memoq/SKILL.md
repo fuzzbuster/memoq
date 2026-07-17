@@ -125,8 +125,14 @@ Pass at least one of `--content` / `--visibility`.
 ### Delete
 
 ```bash
-memoq delete <uid>
+memoq delete <uid> --dry-run --json
+# after the user approves the exact preview:
+memoq delete <uid> --yes --json
 ```
+
+`create` and `update` are frequent, recoverable operations: execute them
+directly unless the user explicitly asks for a preview. Destructive operations
+never prompt; they require `--yes`.
 
 ## Attachments (download blobs so you can read images/files)
 
@@ -207,6 +213,9 @@ Body / query flags shared by every resource verb:
 - `--body '{...}'` — a raw JSON body (wins over `--field`).
 - `--body-file <path|->` — read the JSON body from a file, or `-` for stdin.
 - `--query k=v` — a URL query parameter, repeatable (pagination, filters, updateMask).
+- `--dry-run` — print the planned request without sending it.
+- `--yes` — confirm a destructive or high-impact operation.
+- `--sync` — sync the local memo cache after a successful request.
 
 ### Resource groups and verbs
 
@@ -215,7 +224,8 @@ memoq memo list --query pageSize=10 --query state=NORMAL
 memoq memo get <uid>
 memoq memo create --field content='hi' --field visibility=PRIVATE
 memoq memo update <uid> --field pinned=true --query updateMask=pinned
-memoq memo delete <uid>
+memoq memo delete <uid> --dry-run
+memoq memo delete <uid> --yes
 memoq memo comments <uid>
 memoq memo comment <uid> --field content='a reply'
 memoq memo relations <uid>
@@ -223,7 +233,8 @@ memoq memo reactions <uid>
 memoq memo react <uid> --field reactionType=THUMBS_UP
 memoq memo unreact <uid> <reactionID>
 memoq memo shares <uid>
-memoq memo share <uid> --body '{}'
+memoq memo share <uid> --body '{}' --dry-run
+memoq memo share <uid> --body '{}' --yes
 
 memoq attachment list
 memoq attachment get <id>
@@ -259,16 +270,18 @@ For any endpoint not wrapped by a named verb (or added by a newer server), use `
 ```bash
 memoq api GET  /api/v1/memos --query pageSize=10
 memoq api POST /api/v1/memos --field content='hello' --field visibility=PRIVATE
-memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned
-memoq api DELETE /api/v1/memos/<uid>
+memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
+memoq api DELETE /api/v1/memos/<uid> --dry-run
+memoq api DELETE /api/v1/memos/<uid> --yes
 ```
 
 `api <METHOD> <PATH>` reaches every current or future endpoint. Prefer the named verbs
 for readability; fall back to `api` for anything exotic.
 
-**Important:** unlike the fast read commands, resource/`api` commands do **not** touch the
-local cache — they neither auto-sync nor reflect their writes into it. After a mutating
-resource command that you also want reflected locally, run `memoq sync`.
+**Cache policy:** `memo create`, `memo update`, and `memo delete` sync the local memo
+cache after success. Other resource commands leave it unchanged. Generic `api` calls
+only sync when `--sync` is supplied. If stderr says the remote write succeeded but
+the local cache is stale, do not retry the write; run `memoq sync` instead.
 
 ## Agent guidance
 
@@ -288,3 +301,15 @@ resource command that you also want reflected locally, run `memoq sync`.
    AI transcription — use the resource commands (`memoq <group> <verb>`), and for exotic or
    newer endpoints use `memoq api <METHOD> <PATH>`. Resource/`api` output is raw JSON;
    parse it directly.
+8. **Do not over-confirm**: run ordinary `create` and `update` requests directly.
+   Use `--dry-run` for them only when the user asks to preview the change.
+9. **Confirm destructive operations**: for delete, batch-delete, share/unshare, token
+   deletion, and user/instance setting changes, first run the exact command with
+   `--dry-run`, show the impact to the user, and wait for explicit approval in the
+   current conversation. Then rerun the same command with `--yes`. If any target or
+   argument changes, preview and confirm again.
+10. **Treat dry-run as a plan, not success**: it never sends a network request or
+    changes local state.
+11. **Parse errors structurally**: resource commands emit JSON errors; fast commands
+    do so when `--json` is present. Use `error.code`, especially
+    `confirmation_required`, instead of matching message text.
