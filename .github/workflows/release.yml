@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: windows
+            goarch: arm64
+            ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -eux
+          mkdir -p dist
+          name="memoq_${GOOS}_${GOARCH}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w" -o "dist/${name}" .
+
+      - name: Package
+        run: |
+          set -eux
+          cd dist
+          asset="memoq_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "${asset}.zip" "memoq_${{ matrix.goos }}_${{ matrix.goarch }}.exe"
+          else
+            tar -czf "${asset}.tar.gz" "memoq_${{ matrix.goos }}_${{ matrix.goarch }}"
+          fi
+          shasum -a 256 "${asset}".* > "${asset}.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256

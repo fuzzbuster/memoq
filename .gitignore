@@ -79,3 +79,6 @@ $RECYCLE.BIN/
 *.log
 .env
 .env.local
+
+# Release artifacts
+/dist/
