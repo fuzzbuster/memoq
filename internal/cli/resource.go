@@ -27,20 +27,93 @@ import (
 	"strings"
 )
 
-// resourceGroups lists the API resource groups memoq understands, used for the
-// top-level usage/help text.
-var resourceGroups = []string{
-	"memo", "attachment", "user", "auth", "shortcut", "instance", "ai", "api",
+// resourceGroupSpec describes one lark-cli-style resource command group.
+type resourceGroupSpec struct {
+	Name  string
+	Use   string
+	Short string
+	Verbs []string
+}
+
+// resourceGroupSpecs is the single source of truth for resource command help.
+var resourceGroupSpecs = []resourceGroupSpec{
+	{
+		Name:  "memo",
+		Use:   "memo <verb>",
+		Short: "Direct memo API commands",
+		Verbs: []string{
+			"list", "get", "create", "update", "delete",
+			"comments", "comment", "relations", "set-relations",
+			"reactions", "react", "unreact",
+			"attachments", "set-attachments",
+			"shares", "share", "unshare", "link-metadata",
+		},
+	},
+	{
+		Name:  "attachment",
+		Use:   "attachment <verb>",
+		Short: "Direct attachment API commands",
+		Verbs: []string{"list", "get", "create", "update", "delete", "batch-delete", "pull"},
+	},
+	{
+		Name:  "user",
+		Use:   "user <verb>",
+		Short: "Direct user API commands",
+		Verbs: []string{
+			"list", "get", "create", "update", "delete",
+			"all-stats", "stats", "settings", "setting", "update-setting",
+			"tokens", "create-token", "delete-token", "webhooks",
+		},
+	},
+	{
+		Name:  "auth",
+		Use:   "auth <verb>",
+		Short: "Direct auth API commands",
+		Verbs: []string{"me", "signin", "signout", "refresh"},
+	},
+	{
+		Name:  "shortcut",
+		Use:   "shortcut <verb>",
+		Short: "Direct shortcut API commands",
+		Verbs: []string{"list", "get", "create", "update", "delete"},
+	},
+	{
+		Name:  "instance",
+		Use:   "instance <verb>",
+		Short: "Direct instance API commands",
+		Verbs: []string{"profile", "setting", "update-setting", "stats"},
+	},
+	{
+		Name:  "ai",
+		Use:   "ai <verb>",
+		Short: "Direct AI API commands",
+		Verbs: []string{"transcribe"},
+	},
+	{
+		Name:  "api",
+		Use:   "api <METHOD> <PATH>",
+		Short: "Generic API escape hatch",
+		Verbs: []string{"<METHOD> <PATH>"},
+	},
 }
 
 // isResourceGroup reports whether cmd names an API resource group handled here.
 func isResourceGroup(cmd string) bool {
-	for _, g := range resourceGroups {
-		if g == cmd {
+	for _, spec := range resourceGroupSpecs {
+		if spec.Name == cmd {
 			return true
 		}
 	}
 	return false
+}
+
+func resourceVerbs(resource string) []string {
+	for _, spec := range resourceGroupSpecs {
+		if spec.Name == resource {
+			return spec.Verbs
+		}
+	}
+	return nil
 }
 
 // dispatchResource routes `memoq <resource> <verb> ...` to the right handler.
@@ -199,6 +272,9 @@ func printRawJSON(raw json.RawMessage) error {
 
 // resourceUsage builds a "usage: memoq <res> <verbs...>" error.
 func resourceUsage(resource string, verbs ...string) error {
+	if len(verbs) == 0 {
+		verbs = resourceVerbs(resource)
+	}
 	return fmt.Errorf("usage: memoq %s <%s> [args] [flags]", resource, strings.Join(verbs, "|"))
 }
 
@@ -235,12 +311,7 @@ func cmdAPI(args []string) error {
 
 func cmdMemoResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("memo",
-			"list", "get", "create", "update", "delete",
-			"comments", "comment", "relations", "set-relations",
-			"reactions", "react", "unreact",
-			"attachments", "set-attachments",
-			"shares", "share", "unshare", "link-metadata")
+		return resourceUsage("memo")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -344,7 +415,7 @@ func cmdMemoResource(args []string) error {
 
 func cmdAttachmentResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("attachment", "list", "get", "create", "update", "delete", "batch-delete", "pull")
+		return resourceUsage("attachment")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -386,11 +457,7 @@ func cmdAttachmentResource(args []string) error {
 
 func cmdUserResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("user",
-			"list", "get", "create", "update", "delete",
-			"all-stats", "stats", "settings", "setting", "update-setting",
-			"tokens", "create-token", "delete-token",
-			"webhooks")
+		return resourceUsage("user")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -491,7 +558,7 @@ func cmdUserResource(args []string) error {
 
 func cmdAuthResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("auth", "me", "signin", "signout", "refresh")
+		return resourceUsage("auth")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -522,7 +589,7 @@ func cmdAuthResource(args []string) error {
 
 func cmdShortcutResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("shortcut", "list", "get", "create", "update", "delete")
+		return resourceUsage("shortcut")
 	}
 	verb, rest := args[0], args[1:]
 	// Shortcuts are scoped under a user: /api/v1/users/{user}/shortcuts.
@@ -563,7 +630,7 @@ func cmdShortcutResource(args []string) error {
 
 func cmdInstanceResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("instance", "profile", "setting", "update-setting", "stats")
+		return resourceUsage("instance")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -612,7 +679,7 @@ func cmdInstanceResource(args []string) error {
 
 func cmdAIResource(args []string) error {
 	if len(args) == 0 {
-		return resourceUsage("ai", "transcribe")
+		return resourceUsage("ai")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {

@@ -7,96 +7,106 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/example/memoq/internal/config"
 	"github.com/example/memoq/internal/memos"
 	"github.com/example/memoq/internal/store"
 	"github.com/example/memoq/internal/syncer"
+	"github.com/spf13/cobra"
 )
-
-const usage = `memoq - Memos CLI for coding agents (no TUI / no MCP / no LLM)
-
-USAGE:
-  memoq <command> [flags]
-
-FAST LOCAL-CACHE COMMANDS (FTS5 + read-time lazy sync):
-  search  <query>        Full-text search local notes (FTS5, LIKE fallback)
-  list                   List notes with filters (--tag --from --to --limit)
-  get     <uid>          Show one note
-  create                 Create a note (--content or stdin, --tag, --visibility)
-  update  <uid>          Update a note (--content / --visibility)
-  delete  <uid>          Delete a note
-  stats                  Local cache overview
-  sync                   Force an incremental sync from the server
-  config  <get|set|path> Manage server_url / token / auto_sync_ttl_seconds
-
-FULL-API RESOURCE COMMANDS (direct to server, raw JSON out):
-  memo       <list|get|create|update|delete|comments|comment|relations|
-              set-relations|reactions|react|unreact|attachments|set-attachments|
-              shares|share|unshare|link-metadata>
-  attachment <list|get|create|update|delete|batch-delete|pull>
-  user       <list|get|create|update|delete|all-stats|stats|settings|setting|
-              update-setting|tokens|create-token|delete-token|webhooks>
-  auth       <me|signin|signout|refresh>
-  shortcut   <list|get|create|update|delete>
-  instance   <profile|setting|update-setting|stats>
-  ai         <transcribe>
-  api        <METHOD> <PATH>   Generic escape hatch (covers any endpoint)
-
-RESOURCE-COMMAND FLAGS:
-  --body '{...}'         Raw JSON request body
-  --body-file <path|->   JSON body from a file ('-' = stdin)
-  --field k=v            Body field (repeatable; value JSON-parsed, string fallback)
-  --query k=v            Query parameter (repeatable)
-
-GLOBAL FLAGS (fast read commands):
-  --json                 Emit JSON instead of plain text
-  --no-sync              Skip read-time auto-sync (use local cache as-is)
-
-Run 'memoq <resource>' with no verb to see its verbs.
-
-CONFIG:
-  memoq config set server_url https://memos.example.com
-  memoq config set token <personal-access-token>
-  memoq config set auto_sync_ttl_seconds 30
-Data lives under $MEMOQ_HOME (default ~/.memoq).
-`
 
 // Run dispatches a command. args excludes the program name.
 func Run(args []string) error {
-	if len(args) == 0 {
-		fmt.Print(usage)
-		return nil
+	root := newRootCommand()
+	root.SetArgs(args)
+	return root.Execute()
+}
+
+func newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "memoq",
+		Short:         "Memos CLI for coding agents",
+		Long:          rootLongHelp(),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
 	}
-	cmd, rest := args[0], args[1:]
-	switch cmd {
-	case "-h", "--help", "help":
-		fmt.Print(usage)
-		return nil
-	case "search":
-		return cmdSearch(rest)
-	case "list":
-		return cmdList(rest)
-	case "get":
-		return cmdGet(rest)
-	case "create":
-		return cmdCreate(rest)
-	case "update":
-		return cmdUpdate(rest)
-	case "delete":
-		return cmdDelete(rest)
-	case "stats":
-		return cmdStats(rest)
-	case "sync":
-		return cmdSync(rest)
-	case "config":
-		return cmdConfig(rest)
-	default:
-		if isResourceGroup(cmd) {
-			return dispatchResource(cmd, rest)
-		}
-		return fmt.Errorf("unknown command %q (run 'memoq help')", cmd)
+	root.SetOut(os.Stdout)
+	root.SetErr(os.Stderr)
+
+	root.AddCommand(
+		legacyCommand("search <query>", "Full-text search local notes", cmdSearch),
+		legacyCommand("list", "List notes with filters", cmdList),
+		legacyCommand("get <uid>", "Show one note", cmdGet),
+		legacyCommand("create", "Create a note", cmdCreate),
+		legacyCommand("update <uid>", "Update a note", cmdUpdate),
+		legacyCommand("delete <uid>", "Delete a note", cmdDelete),
+		legacyCommand("stats", "Local cache overview", cmdStats),
+		legacyCommand("sync", "Force an incremental sync from the server", cmdSync),
+		legacyCommand("config <get|set|path|list>", "Manage local configuration", cmdConfig),
+	)
+	for _, spec := range resourceGroupSpecs {
+		root.AddCommand(resourceCommand(spec))
 	}
+	return root
+}
+
+func legacyCommand(use, short string, run func([]string) error) *cobra.Command {
+	return &cobra.Command{
+		Use:                use,
+		Short:              short,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if wantsHelp(args) {
+				return cmd.Help()
+			}
+			return run(args)
+		},
+	}
+}
+
+func resourceCommand(spec resourceGroupSpec) *cobra.Command {
+	long := fmt.Sprintf("%s\n\nVerbs: %s", spec.Short, strings.Join(spec.Verbs, " "))
+	if spec.Name != "api" {
+		long += "\n\nFlags: --body, --body-file, --field, --query"
+	}
+	return &cobra.Command{
+		Use:                spec.Use,
+		Short:              spec.Short,
+		Long:               long,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if wantsHelp(args) {
+				return cmd.Help()
+			}
+			return dispatchResource(spec.Name, args)
+		},
+	}
+}
+
+func wantsHelp(args []string) bool {
+	return len(args) == 1 && (args[0] == "-h" || args[0] == "--help")
+}
+
+func rootLongHelp() string {
+	return `memoq is a minimal, non-interactive Memos CLI.
+
+Fast local-cache commands:
+  search, list, get, create, update, delete, stats, sync, config
+
+Full-API resource commands:
+  memo, attachment, user, auth, shortcut, instance, ai, api
+
+Resource commands follow the lark-cli-style shape:
+  memoq <resource> <verb> [positional] [flags]
+
+Shared resource flags:
+  --body, --body-file, --field, --query
+
+Data lives under $MEMOQ_HOME (default ~/.memoq).`
 }
 
 // app bundles the resolved runtime dependencies shared by commands.
