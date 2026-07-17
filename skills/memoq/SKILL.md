@@ -23,8 +23,9 @@ completion and exits. Always add `--json` when you intend to parse the output.
 
 ## Prerequisites (one-time)
 
-The binary must be on `PATH` (build with `go build -o memoq .` inside the project, then
-move it somewhere on `PATH`). Before first use, configure the server and token:
+Ensure the `memoq` binary is on `PATH`. If building from source, run `make build` and
+use `bin/memoq` or move it somewhere on `PATH`. Before first use, configure the server
+and token:
 
 ```bash
 memoq config set server_url https://memos.example.com
@@ -160,6 +161,29 @@ Runs a full incremental reconcile (added / updated / deleted / unchanged) agains
 remote server. Read commands auto-sync per the TTL, so an explicit `sync` is only needed
 after `--no-sync` usage, when a `get` misses, or to guarantee freshness before a report.
 
+## HTTP debugging
+
+Set `MEMOQ_HTTP_DEBUG` only when you need to inspect HTTP traffic from `memoq`.
+Debug output goes to **stderr**, so do not parse it as command JSON.
+
+```bash
+MEMOQ_HTTP_DEBUG=headers memoq memo list --query pageSize=10
+MEMOQ_HTTP_DEBUG=trace memoq sync --json
+MEMOQ_HTTP_DEBUG=dump memoq api GET /api/v1/auth/me
+```
+
+Supported modes:
+
+- `headers` — dump request and response headers.
+- `trace` — print request timing / blame information.
+- `debug` — enable verbose HTTP debug logs.
+- `dump` — dump headers and bodies; may expose tokens or memo content.
+- `dev` — enable verbose HTTP diagnostics; may expose tokens or memo content.
+
+Use `headers` or `trace` first. Use `dump` / `dev` only for local debugging, and never
+paste their output into chat or logs without redacting secrets. Attachment downloads do
+not dump response bodies.
+
 ## Full-API resource commands
 
 Beyond the fast local-cache commands above, `memoq` exposes the **entire** Memos v1 REST
@@ -215,7 +239,7 @@ memoq instance stats
 memoq ai transcribe --field <...>
 ```
 
-Run any resource group with no verb (e.g. `memoq user`) to print its verb list.
+Run `memoq <resource> --help` (for example, `memoq user --help`) to print its verb list.
 
 > **Endpoint reference:** the exact method+path each verb targets is documented
 > in `docs/ENDPOINTS.md`; the process for tracking upstream API changes is in
