@@ -69,7 +69,7 @@ func legacyCommand(use, short string, run func([]string) error) *cobra.Command {
 }
 
 func resourceCommand(spec resourceGroupSpec) *cobra.Command {
-	long := fmt.Sprintf("%s\n\nVerbs: %s", spec.Short, strings.Join(spec.Verbs, " "))
+	long := fmt.Sprintf("%s\n\nVerbs: %s", spec.Short, strings.Join(resourceVerbs(spec.Name), " "))
 	if spec.Name != "api" {
 		long += "\n\nFlags: --body, --body-file, --field, --query"
 	}
