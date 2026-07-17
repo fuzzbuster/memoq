@@ -133,6 +133,21 @@ Run any group with no verb (e.g. `memoq user`) to print its verb list.
 > auto-sync nor reflect their writes into it. After a mutating resource command
 > you also want cached locally, run `memoq sync`.
 
+### HTTP debugging
+
+Set `MEMOQ_HTTP_DEBUG` to inspect requests made through the req client. Debug
+output goes to stderr, so JSON stdout stays parseable.
+
+```bash
+MEMOQ_HTTP_DEBUG=headers memoq memo list --query pageSize=10
+MEMOQ_HTTP_DEBUG=trace memoq sync --json
+MEMOQ_HTTP_DEBUG=dump memoq api GET /api/v1/auth/me
+```
+
+Supported modes: `headers`, `dump`, `trace`, `debug`, `dev`. `dump` / `dev`
+may expose tokens or memo content; attachment downloads do not dump response
+body.
+
 ## Attachments (local download for agents)
 
 Attachment blob **bytes are never returned by the JSON API** — the Memos proto
@@ -162,7 +177,7 @@ externally-linked attachments are recorded but not downloaded.
 main.go                     entry point → cli.Run
 internal/config/            config + path resolution
 internal/store/             SQLite store, FTS5, migrations, attachment cache
-internal/memos/             net/http Memos v1 API client (generic Do + typed helpers)
+internal/memos/             Memos v1 API client (generic Do + typed helpers)
 internal/syncer/            incremental sync engine
 internal/cli/               command dispatch, output formatting
 internal/cli/resource.go    lark-cli-style resource-group + verb commands (full API)
@@ -178,4 +193,5 @@ docs/UPSTREAM_SYNC.md       playbook for tracking upstream Memos API changes
 go build ./... && go vet ./... && gofmt -l . && go test ./...
 ```
 
-Standard library only, except the pure-Go SQLite driver (`modernc.org/sqlite`).
+HTTP requests use `github.com/imroc/req/v3`; SQLite uses the pure-Go
+`modernc.org/sqlite` driver.

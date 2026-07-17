@@ -21,10 +21,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
+)
+
+const (
+	methodGet    = "GET"
+	methodPost   = "POST"
+	methodPatch  = "PATCH"
+	methodDelete = "DELETE"
 )
 
 // resourceGroupSpec describes one lark-cli-style resource command group.
@@ -282,71 +288,71 @@ type resourceVerbSpec struct {
 
 var resourceVerbSpecs = map[string][]resourceVerbSpec{
 	"memo": {
-		verb("list", http.MethodGet, argsAny, false, fixedPath("/api/v1/memos")),
-		verb("get", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "")),
-		verb("create", http.MethodPost, argsAny, true, fixedPath("/api/v1/memos")),
-		verb("update", http.MethodPatch, argsOne, true, onePath("/api/v1/memos/", "")),
-		verb("delete", http.MethodDelete, argsOne, false, onePath("/api/v1/memos/", "")),
-		verb("comments", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "/comments")),
-		verb("comment", http.MethodPost, argsOne, true, onePath("/api/v1/memos/", "/comments")),
-		verb("relations", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "/relations")),
-		verb("set-relations", http.MethodPatch, argsOne, true, onePath("/api/v1/memos/", "/relations")),
-		verb("reactions", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "/reactions")),
-		verb("react", http.MethodPost, argsOne, true, onePath("/api/v1/memos/", "/reactions")),
-		verb("unreact", http.MethodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/reactions/", "")),
-		verb("attachments", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "/attachments")),
-		verb("set-attachments", http.MethodPatch, argsOne, true, onePath("/api/v1/memos/", "/attachments")),
-		verb("shares", http.MethodGet, argsOne, false, onePath("/api/v1/memos/", "/shares")),
-		verb("share", http.MethodPost, argsOne, true, onePath("/api/v1/memos/", "/shares")),
-		verb("unshare", http.MethodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/shares/", "")),
-		verb("link-metadata", http.MethodGet, argsAny, false, fixedPath("/api/v1/memos/-/linkMetadata")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/memos")),
+		verb("get", methodGet, argsOne, false, onePath("/api/v1/memos/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/memos")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/v1/memos/", "")),
+		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/memos/", "")),
+		verb("comments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/comments")),
+		verb("comment", methodPost, argsOne, true, onePath("/api/v1/memos/", "/comments")),
+		verb("relations", methodGet, argsOne, false, onePath("/api/v1/memos/", "/relations")),
+		verb("set-relations", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/relations")),
+		verb("reactions", methodGet, argsOne, false, onePath("/api/v1/memos/", "/reactions")),
+		verb("react", methodPost, argsOne, true, onePath("/api/v1/memos/", "/reactions")),
+		verb("unreact", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/reactions/", "")),
+		verb("attachments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/attachments")),
+		verb("set-attachments", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/attachments")),
+		verb("shares", methodGet, argsOne, false, onePath("/api/v1/memos/", "/shares")),
+		verb("share", methodPost, argsOne, true, onePath("/api/v1/memos/", "/shares")),
+		verb("unshare", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/shares/", "")),
+		verb("link-metadata", methodGet, argsAny, false, fixedPath("/api/v1/memos/-/linkMetadata")),
 	},
 	"attachment": {
 		handlerVerb("pull", cmdAttachmentPull),
-		verb("list", http.MethodGet, argsAny, false, fixedPath("/api/v1/attachments")),
-		verb("get", http.MethodGet, argsOne, false, onePath("/api/v1/attachments/", "")),
-		verb("create", http.MethodPost, argsAny, true, fixedPath("/api/v1/attachments")),
-		verb("update", http.MethodPatch, argsOne, true, onePath("/api/v1/attachments/", "")),
-		verb("delete", http.MethodDelete, argsOne, false, onePath("/api/v1/attachments/", "")),
-		verb("batch-delete", http.MethodPost, argsAny, true, fixedPath("/api/v1/attachments:batchDelete")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/attachments")),
+		verb("get", methodGet, argsOne, false, onePath("/api/v1/attachments/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/attachments")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/v1/attachments/", "")),
+		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/attachments/", "")),
+		verb("batch-delete", methodPost, argsAny, true, fixedPath("/api/v1/attachments:batchDelete")),
 	},
 	"user": {
-		verb("list", http.MethodGet, argsAny, false, fixedPath("/api/v1/users")),
-		verb("get", http.MethodGet, argsOne, false, onePath("/api/v1/users/", "")),
-		verb("create", http.MethodPost, argsAny, true, fixedPath("/api/v1/users")),
-		verb("update", http.MethodPatch, argsOne, true, onePath("/api/v1/users/", "")),
-		verb("delete", http.MethodDelete, argsOne, false, onePath("/api/v1/users/", "")),
-		verb("all-stats", http.MethodGet, argsAny, false, fixedPath("/api/v1/users:stats")),
-		verb("stats", http.MethodGet, argsOne, false, onePath("/api/v1/users/", ":getStats")),
-		verb("settings", http.MethodGet, argsOne, false, onePath("/api/v1/users/", "/settings")),
-		verb("setting", http.MethodGet, argsTwo, false, twoPath("/api/v1/users/", "/settings/", "")),
-		verb("update-setting", http.MethodPatch, argsTwo, true, twoPath("/api/v1/users/", "/settings/", "")),
-		verb("tokens", http.MethodGet, argsOne, false, onePath("/api/v1/users/", "/personalAccessTokens")),
-		verb("create-token", http.MethodPost, argsOne, true, onePath("/api/v1/users/", "/personalAccessTokens")),
-		verb("delete-token", http.MethodDelete, argsTwo, false, twoPath("/api/v1/users/", "/personalAccessTokens/", "")),
-		verb("webhooks", http.MethodGet, argsOne, false, onePath("/api/v1/users/", "/webhooks")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/users")),
+		verb("get", methodGet, argsOne, false, onePath("/api/v1/users/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/users")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/v1/users/", "")),
+		verb("delete", methodDelete, argsOne, false, onePath("/api/v1/users/", "")),
+		verb("all-stats", methodGet, argsAny, false, fixedPath("/api/v1/users:stats")),
+		verb("stats", methodGet, argsOne, false, onePath("/api/v1/users/", ":getStats")),
+		verb("settings", methodGet, argsOne, false, onePath("/api/v1/users/", "/settings")),
+		verb("setting", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/settings/", "")),
+		verb("update-setting", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/settings/", "")),
+		verb("tokens", methodGet, argsOne, false, onePath("/api/v1/users/", "/personalAccessTokens")),
+		verb("create-token", methodPost, argsOne, true, onePath("/api/v1/users/", "/personalAccessTokens")),
+		verb("delete-token", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/personalAccessTokens/", "")),
+		verb("webhooks", methodGet, argsOne, false, onePath("/api/v1/users/", "/webhooks")),
 	},
 	"auth": {
-		aliasVerb([]string{"me", "status"}, http.MethodGet, argsAny, false, fixedPath("/api/v1/auth/me")),
-		verb("signin", http.MethodPost, argsAny, true, fixedPath("/api/v1/auth/signin")),
-		verb("signout", http.MethodPost, argsAny, false, fixedPath("/api/v1/auth/signout")),
-		verb("refresh", http.MethodPost, argsAny, true, fixedPath("/api/v1/auth/refresh")),
+		aliasVerb([]string{"me", "status"}, methodGet, argsAny, false, fixedPath("/api/v1/auth/me")),
+		verb("signin", methodPost, argsAny, true, fixedPath("/api/v1/auth/signin")),
+		verb("signout", methodPost, argsAny, false, fixedPath("/api/v1/auth/signout")),
+		verb("refresh", methodPost, argsAny, true, fixedPath("/api/v1/auth/refresh")),
 	},
 	"shortcut": {
-		verb("list", http.MethodGet, argsOne, false, onePath("/api/v1/users/", "/shortcuts")),
-		verb("get", http.MethodGet, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
-		verb("create", http.MethodPost, argsOne, true, onePath("/api/v1/users/", "/shortcuts")),
-		verb("update", http.MethodPatch, argsTwo, true, twoPath("/api/v1/users/", "/shortcuts/", "")),
-		verb("delete", http.MethodDelete, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
+		verb("list", methodGet, argsOne, false, onePath("/api/v1/users/", "/shortcuts")),
+		verb("get", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
+		verb("create", methodPost, argsOne, true, onePath("/api/v1/users/", "/shortcuts")),
+		verb("update", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/shortcuts/", "")),
+		verb("delete", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
 	},
 	"instance": {
-		verb("profile", http.MethodGet, argsAny, false, fixedPath("/api/v1/instance/profile")),
-		verb("setting", http.MethodGet, argsOptionalOne, false, optionalOnePath("/api/v1/instance/settings", "/api/v1/instance/settings/")),
-		verb("update-setting", http.MethodPatch, argsOne, true, onePath("/api/v1/instance/settings/", "")),
-		verb("stats", http.MethodGet, argsAny, false, fixedPath("/api/v1/instance/stats")),
+		verb("profile", methodGet, argsAny, false, fixedPath("/api/v1/instance/profile")),
+		verb("setting", methodGet, argsOptionalOne, false, optionalOnePath("/api/v1/instance/settings", "/api/v1/instance/settings/")),
+		verb("update-setting", methodPatch, argsOne, true, onePath("/api/v1/instance/settings/", "")),
+		verb("stats", methodGet, argsAny, false, fixedPath("/api/v1/instance/stats")),
 	},
 	"ai": {
-		verb("transcribe", http.MethodPost, argsAny, true, fixedPath("/api/v1/ai:transcribe")),
+		verb("transcribe", methodPost, argsAny, true, fixedPath("/api/v1/ai:transcribe")),
 	},
 }
 

@@ -1,7 +1,7 @@
-// Package memos is a Memos v1 REST API client built on net/http only (no third
-// party HTTP libraries). It targets the Memos API used by the upstream project
-// (github.com/usememos/memos) and aims to cover the full v1 surface: memos,
-// attachments, users, auth, shortcuts, instance settings, and AI transcription.
+// Package memos is a Memos v1 REST API client. It targets the Memos API used by
+// the upstream project (github.com/usememos/memos) and aims to cover the full v1
+// surface: memos, attachments, users, auth, shortcuts, instance settings, and AI
+// transcription.
 package memos
 
 import (
@@ -12,25 +12,78 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/imroc/req/v3"
+)
+
+const (
+	methodGet    = "GET"
+	methodPost   = "POST"
+	methodPatch  = "PATCH"
+	methodDelete = "DELETE"
 )
 
 // Client talks to a single Memos server.
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL      string
+	token        string
+	http         *req.Client
+	downloadHTTP *req.Client
 }
 
 // New builds a client. baseURL is the server root (without /api/v1).
 func New(baseURL, token string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		token:        token,
+		http:         newHTTPClient(false),
+		downloadHTTP: newHTTPClient(true),
+	}
+}
+
+func newHTTPClient(skipResponseBodyDump bool) *req.Client {
+	c := req.C().SetTimeout(60 * time.Second)
+	configureHTTPDebug(c, skipResponseBodyDump)
+	return c
+}
+
+func configureHTTPDebug(c *req.Client, skipResponseBodyDump bool) {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("MEMOQ_HTTP_DEBUG")))
+	if mode == "" {
+		return
+	}
+
+	dumpOpt := &req.DumpOptions{Output: os.Stderr}
+	switch mode {
+	case "headers":
+		dumpOpt.RequestHeader = true
+		dumpOpt.ResponseHeader = true
+		c.SetCommonDumpOptions(dumpOpt).EnableDumpAll()
+	case "dump":
+		dumpOpt.RequestHeader = true
+		dumpOpt.RequestBody = true
+		dumpOpt.ResponseHeader = true
+		dumpOpt.ResponseBody = !skipResponseBodyDump
+		c.SetCommonDumpOptions(dumpOpt).EnableDumpAll()
+	case "trace":
+		c.EnableTraceAll().OnAfterResponse(func(_ *req.Client, resp *req.Response) error {
+			fmt.Fprintf(os.Stderr, "%s\n%s\n", resp.TraceInfo().Blame(), resp.TraceInfo())
+			return nil
+		})
+	case "debug":
+		c.SetLogger(req.NewLogger(os.Stderr, "", 0)).EnableDebugLog()
+	case "dev":
+		dumpOpt.RequestHeader = true
+		dumpOpt.RequestBody = true
+		dumpOpt.ResponseHeader = true
+		dumpOpt.ResponseBody = !skipResponseBodyDump
+		c.SetCommonDumpOptions(dumpOpt).
+			SetLogger(req.NewLogger(os.Stderr, "", 0)).
+			DevMode()
 	}
 }
 
@@ -55,43 +108,42 @@ type rawSink struct{ dst *json.RawMessage }
 // response into out (if non-nil). It returns a descriptive error for non-2xx
 // responses. out may be a *rawSink to capture the raw JSON body.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	var reader io.Reader
+	var reqBody []byte
 	if body != nil {
 		switch b := body.(type) {
 		case []byte:
-			reader = bytes.NewReader(b)
+			reqBody = b
 		case json.RawMessage:
-			reader = bytes.NewReader(b)
+			reqBody = b
 		default:
 			buf, err := json.Marshal(body)
 			if err != nil {
 				return err
 			}
-			reader = bytes.NewReader(buf)
+			reqBody = buf
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
+
+	req := c.http.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/json")
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.SetHeader("Content-Type", "application/json").
+			SetBodyBytes(reqBody)
 	}
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.SetBearerAuthToken(c.token)
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := req.Send(method, c.baseURL+path)
 	if err != nil {
 		return fmt.Errorf("request %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, _ := resp.ToBytes()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.GetStatusCode() < 200 || resp.GetStatusCode() >= 300 {
 		return fmt.Errorf("memos API %s %s -> %d: %s",
-			method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+			method, path, resp.GetStatusCode(), strings.TrimSpace(string(data)))
 	}
 	switch sink := out.(type) {
 	case nil:
@@ -203,7 +255,7 @@ func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 			[2]string{"pageToken", pageToken},
 		)
 		var resp listMemosResponse
-		if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		if err := c.do(ctx, methodGet, path, nil, &resp); err != nil {
 			return nil, err
 		}
 		all = append(all, resp.Memos...)
@@ -218,7 +270,7 @@ func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 // Get fetches a single memo by UID.
 func (c *Client) Get(ctx context.Context, uid string) (*Memo, error) {
 	var m Memo
-	if err := c.do(ctx, http.MethodGet, "/api/v1/memos/"+url.PathEscape(uid), nil, &m); err != nil {
+	if err := c.do(ctx, methodGet, "/api/v1/memos/"+url.PathEscape(uid), nil, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -232,7 +284,7 @@ func (c *Client) Create(ctx context.Context, content, visibility string) (*Memo,
 	}
 	reqBody := map[string]any{"content": content, "visibility": visibility}
 	var m Memo
-	if err := c.do(ctx, http.MethodPost, "/api/v1/memos", reqBody, &m); err != nil {
+	if err := c.do(ctx, methodPost, "/api/v1/memos", reqBody, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -255,7 +307,7 @@ func (c *Client) Update(ctx context.Context, uid, content, visibility string) (*
 		[2]string{"updateMask", strings.Join(mask, ",")},
 	)
 	var m Memo
-	if err := c.do(ctx, http.MethodPatch, path, patch, &m); err != nil {
+	if err := c.do(ctx, methodPatch, path, patch, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -263,14 +315,14 @@ func (c *Client) Update(ctx context.Context, uid, content, visibility string) (*
 
 // Delete removes a memo by UID.
 func (c *Client) Delete(ctx context.Context, uid string) error {
-	return c.do(ctx, http.MethodDelete, "/api/v1/memos/"+url.PathEscape(uid), nil, nil)
+	return c.do(ctx, methodDelete, "/api/v1/memos/"+url.PathEscape(uid), nil, nil)
 }
 
 // Ping verifies connectivity and auth by fetching the authenticated user. It
 // returns a descriptive error if the server is unreachable or the token is
 // rejected.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.do(ctx, http.MethodGet, "/api/v1/auth/me", nil, nil)
+	return c.do(ctx, methodGet, "/api/v1/auth/me", nil, nil)
 }
 
 // --- attachments ------------------------------------------------------------
@@ -319,7 +371,7 @@ type listAttachmentsResponse struct {
 func (c *Client) ListMemoAttachments(ctx context.Context, memoUID string) ([]*Attachment, error) {
 	var resp listAttachmentsResponse
 	path := "/api/v1/memos/" + url.PathEscape(memoUID) + "/attachments"
-	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.do(ctx, methodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Attachments, nil
@@ -338,14 +390,13 @@ func (c *Client) DownloadFile(ctx context.Context, name, filename string, w io.W
 	}
 	path := "/file/" + strings.Join(segs, "/") + "/" + url.PathEscape(filename)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return 0, err
-	}
+	req := c.downloadHTTP.R().
+		SetContext(ctx).
+		DisableAutoReadResponse()
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.SetBearerAuthToken(c.token)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := req.Send(methodGet, c.baseURL+path)
 	if err != nil {
 		return 0, fmt.Errorf("download %s: %w", path, err)
 	}
