@@ -113,21 +113,10 @@ func dispatchResource(resource string, args []string) error {
 	switch resource {
 	case "api":
 		return cmdAPI(args)
-	case "memo":
-		return cmdMemoResource(args)
-	case "attachment":
-		return cmdAttachmentResource(args)
-	case "user":
-		return cmdUserResource(args)
-	case "auth":
-		return cmdAuthResource(args)
-	case "shortcut":
-		return cmdShortcutResource(args)
-	case "instance":
-		return cmdInstanceResource(args)
-	case "ai":
-		return cmdAIResource(args)
 	default:
+		if isResourceGroup(resource) {
+			return runResourceVerb(resource, args)
+		}
 		return fmt.Errorf("unknown resource %q", resource)
 	}
 }
@@ -450,7 +439,7 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 			Method:      spec.Method,
 			Path:        path,
 			Body:        body,
-			CachePolicy: cachePolicy(spec.SyncMemoCache),
+			CachePolicy: cachePolicy(spec.SyncMemoCache || af.sync),
 		})
 	}
 	if spec.Confirm && !af.yes {
@@ -559,51 +548,9 @@ func requiresAPIConfirmation(method, path string) bool {
 	if method == methodDelete {
 		return true
 	}
-	if strings.Contains(path, ":batchDelete") || strings.Contains(path, "/shares") {
+	if method == methodPost && (strings.Contains(path, ":batchDelete") || strings.Contains(path, "/shares")) {
 		return true
 	}
 	return method == methodPatch &&
 		(strings.Contains(path, "/instance/settings/") || strings.Contains(path, "/users/") && strings.Contains(path, "/settings/"))
-}
-
-// ---- memo resource ---------------------------------------------------------
-
-func cmdMemoResource(args []string) error {
-	return runResourceVerb("memo", args)
-}
-
-// ---- attachment resource ---------------------------------------------------
-
-func cmdAttachmentResource(args []string) error {
-	return runResourceVerb("attachment", args)
-}
-
-// ---- user resource ---------------------------------------------------------
-
-func cmdUserResource(args []string) error {
-	return runResourceVerb("user", args)
-}
-
-// ---- auth resource ---------------------------------------------------------
-
-func cmdAuthResource(args []string) error {
-	return runResourceVerb("auth", args)
-}
-
-// ---- shortcut resource -----------------------------------------------------
-
-func cmdShortcutResource(args []string) error {
-	return runResourceVerb("shortcut", args)
-}
-
-// ---- instance resource -----------------------------------------------------
-
-func cmdInstanceResource(args []string) error {
-	return runResourceVerb("instance", args)
-}
-
-// ---- ai resource -----------------------------------------------------------
-
-func cmdAIResource(args []string) error {
-	return runResourceVerb("ai", args)
 }

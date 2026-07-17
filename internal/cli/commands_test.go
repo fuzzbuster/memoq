@@ -140,6 +140,15 @@ func TestFastWriteDryRunAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestHasArgSupportsBooleanAssignment(t *testing.T) {
+	if !hasArg([]string{"--json=true"}, "--json") {
+		t.Fatal("expected --json=true to be recognized")
+	}
+	if hasArg([]string{"--json=false"}, "--json") {
+		t.Fatal("expected --json=false not to enable JSON")
+	}
+}
+
 func TestOneLine_Truncates(t *testing.T) {
 	got := oneLine("line one\nline two with many words here", 10)
 	r := []rune(got)

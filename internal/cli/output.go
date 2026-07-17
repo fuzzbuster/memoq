@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,10 @@ func hasArg(args []string, target string) bool {
 	for _, arg := range args {
 		if arg == target {
 			return true
+		}
+		if strings.HasPrefix(arg, target+"=") {
+			value, err := strconv.ParseBool(strings.TrimPrefix(arg, target+"="))
+			return err == nil && value
 		}
 	}
 	return false

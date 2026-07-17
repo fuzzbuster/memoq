@@ -232,6 +232,22 @@ func TestGenericAPIDeleteRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestGenericAPIReadSharesDoesNotRequireConfirmation(t *testing.T) {
+	c := stubRunAPI(t)
+	if err := Run([]string{"api", "GET", "/api/v1/memos/abc/shares"}); err != nil {
+		t.Fatal(err)
+	}
+	if c.method != "GET" {
+		t.Fatalf("method = %q, want GET", c.method)
+	}
+}
+
+func TestResourceDryRunReportsExplicitSync(t *testing.T) {
+	if got := cachePolicy(true); got != "sync" {
+		t.Fatalf("cachePolicy(true) = %q, want sync", got)
+	}
+}
+
 func TestUnknownVerbAndResource(t *testing.T) {
 	stubRunAPI(t)
 	if err := Run([]string{"memo", "bogus"}); err == nil {
