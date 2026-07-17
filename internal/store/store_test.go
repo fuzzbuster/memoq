@@ -433,18 +433,6 @@ func TestAttachmentUpsertPreservesLocalPath(t *testing.T) {
 	}
 }
 
-func TestSetAttachmentLocalPath(t *testing.T) {
-	s := newTestStore(t)
-	_ = s.UpsertAttachment(&Attachment{UID: "a", Filename: "f"})
-	if err := s.SetAttachmentLocalPath("a", "/x/y"); err != nil {
-		t.Fatalf("SetAttachmentLocalPath: %v", err)
-	}
-	got, _ := s.GetAttachment("a")
-	if got.LocalPath != "/x/y" {
-		t.Errorf("local_path = %q, want /x/y", got.LocalPath)
-	}
-}
-
 func TestGetAttachmentMissing(t *testing.T) {
 	s := newTestStore(t)
 	got, err := s.GetAttachment("nope")
@@ -453,25 +441,5 @@ func TestGetAttachmentMissing(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected nil for missing attachment, got %+v", got)
-	}
-}
-
-func TestDeleteAttachmentAndAllUIDs(t *testing.T) {
-	s := newTestStore(t)
-	_ = s.UpsertAttachment(&Attachment{UID: "a", Filename: "fa"})
-	_ = s.UpsertAttachment(&Attachment{UID: "b", Filename: "fb"})
-	set, err := s.AllAttachmentUIDs()
-	if err != nil {
-		t.Fatalf("AllAttachmentUIDs: %v", err)
-	}
-	if len(set) != 2 || !set["a"] || !set["b"] {
-		t.Errorf("AllAttachmentUIDs = %v, want {a,b}", set)
-	}
-	if err := s.DeleteAttachment("a"); err != nil {
-		t.Fatalf("DeleteAttachment: %v", err)
-	}
-	set, _ = s.AllAttachmentUIDs()
-	if len(set) != 1 || set["a"] {
-		t.Errorf("after delete AllAttachmentUIDs = %v, want {b}", set)
 	}
 }

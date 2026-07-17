@@ -197,12 +197,6 @@ func printRawJSON(raw json.RawMessage) error {
 	return nil
 }
 
-// parseResourceArgs is parseArgs specialized for resource verbs (same intersperse
-// behavior). It returns the positional args after flag parsing.
-func parseResourceArgs(fs *flag.FlagSet, args []string) ([]string, error) {
-	return parseArgs(fs, args)
-}
-
 // resourceUsage builds a "usage: memoq <res> <verbs...>" error.
 func resourceUsage(resource string, verbs ...string) error {
 	return fmt.Errorf("usage: memoq %s <%s> [args] [flags]", resource, strings.Join(verbs, "|"))
@@ -216,7 +210,7 @@ func cmdAPI(args []string) error {
 	fs := flag.NewFlagSet("api", flag.ContinueOnError)
 	var af apiFlags
 	af.register(fs)
-	pos, err := parseResourceArgs(fs, args)
+	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
@@ -254,7 +248,7 @@ func cmdMemoResource(args []string) error {
 		fs := flag.NewFlagSet("memo list", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/memos"+af.queryString(), nil)
@@ -337,7 +331,7 @@ func cmdMemoResource(args []string) error {
 		fs := flag.NewFlagSet("memo link-metadata", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/memos/-/linkMetadata"+af.queryString(), nil)
@@ -360,7 +354,7 @@ func cmdAttachmentResource(args []string) error {
 		fs := flag.NewFlagSet("attachment list", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/attachments"+af.queryString(), nil)
@@ -404,7 +398,7 @@ func cmdUserResource(args []string) error {
 		fs := flag.NewFlagSet("user list", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/users"+af.queryString(), nil)
@@ -429,7 +423,7 @@ func cmdUserResource(args []string) error {
 		fs := flag.NewFlagSet("user all-stats", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/users:stats"+af.queryString(), nil)
@@ -506,7 +500,7 @@ func cmdAuthResource(args []string) error {
 		fs := flag.NewFlagSet("auth me", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/auth/me"+af.queryString(), nil)
@@ -578,7 +572,7 @@ func cmdInstanceResource(args []string) error {
 		fs := flag.NewFlagSet("instance profile", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/instance/profile"+af.queryString(), nil)
@@ -588,7 +582,7 @@ func cmdInstanceResource(args []string) error {
 		fs := flag.NewFlagSet("instance setting", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		pos, err := parseResourceArgs(fs, rest)
+		pos, err := parseArgs(fs, rest)
 		if err != nil {
 			return err
 		}
@@ -605,7 +599,7 @@ func cmdInstanceResource(args []string) error {
 		fs := flag.NewFlagSet("instance stats", flag.ContinueOnError)
 		var af apiFlags
 		af.register(fs)
-		if _, err := parseResourceArgs(fs, rest); err != nil {
+		if _, err := parseArgs(fs, rest); err != nil {
 			return err
 		}
 		return runAPI(http.MethodGet, "/api/v1/instance/stats"+af.queryString(), nil)
@@ -637,7 +631,7 @@ func oneArgWithFlags(name string, args []string) (string, *apiFlags, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	af := &apiFlags{}
 	af.register(fs)
-	pos, err := parseResourceArgs(fs, args)
+	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return "", nil, err
 	}
@@ -652,7 +646,7 @@ func twoArgsWithFlags(name string, args []string) (string, string, *apiFlags, er
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	af := &apiFlags{}
 	af.register(fs)
-	pos, err := parseResourceArgs(fs, args)
+	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -681,7 +675,7 @@ func bodyVerb(name, method, path, suffix string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	af := &apiFlags{}
 	af.register(fs)
-	if _, err := parseResourceArgs(fs, args); err != nil {
+	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	body, err := af.buildBody()
@@ -697,7 +691,7 @@ func uidBodyVerb(name, method, prefix, suffix string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	af := &apiFlags{}
 	af.register(fs)
-	pos, err := parseResourceArgs(fs, args)
+	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}

@@ -134,12 +134,9 @@ func query(pairs ...[2]string) string {
 type Memo struct {
 	Name       string     `json:"name"` // "memos/{uid}"
 	UID        string     `json:"uid"`  // some versions expose uid directly
-	Creator    string     `json:"creator"`
 	Content    string     `json:"content"`
 	Visibility string     `json:"visibility"`
 	Pinned     bool       `json:"pinned"`
-	State      string     `json:"state"`
-	RowStatus  string     `json:"rowStatus"`
 	CreateTime *time.Time `json:"createTime"`
 	UpdateTime *time.Time `json:"updateTime"`
 	Tags       []string   `json:"tags"`
@@ -323,16 +320,6 @@ func (c *Client) ListMemoAttachments(ctx context.Context, memoUID string) ([]*At
 	var resp listAttachmentsResponse
 	path := "/api/v1/memos/" + url.PathEscape(memoUID) + "/attachments"
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Attachments, nil
-}
-
-// ListAttachments fetches all attachments the token can see via
-// GET /api/v1/attachments.
-func (c *Client) ListAttachments(ctx context.Context) ([]*Attachment, error) {
-	var resp listAttachmentsResponse
-	if err := c.do(ctx, http.MethodGet, "/api/v1/attachments", nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Attachments, nil

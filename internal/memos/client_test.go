@@ -408,20 +408,6 @@ func TestListMemoAttachments(t *testing.T) {
 	}
 }
 
-func TestListAttachments(t *testing.T) {
-	c, cap := mockServer(t, 200, `{"attachments":[{"name":"attachments/7","filename":"z"}]}`)
-	atts, err := c.ListAttachments(context.Background())
-	if err != nil {
-		t.Fatalf("ListAttachments: %v", err)
-	}
-	if cap.path != "/api/v1/attachments" {
-		t.Errorf("path = %q, want /api/v1/attachments", cap.path)
-	}
-	if len(atts) != 1 || atts[0].IDValue() != "7" {
-		t.Errorf("atts = %+v", atts)
-	}
-}
-
 func TestDownloadFile(t *testing.T) {
 	blob := []byte("\x89PNG\r\n\x1a\n-fake-image-bytes")
 	var gotPath, gotAuth string

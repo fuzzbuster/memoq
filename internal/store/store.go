@@ -201,12 +201,6 @@ func (s *Store) UpsertAttachment(a *Attachment) error {
 	return err
 }
 
-// SetAttachmentLocalPath records the on-disk path of a downloaded blob.
-func (s *Store) SetAttachmentLocalPath(uid, localPath string) error {
-	_, err := s.db.Exec(`UPDATE attachments SET local_path=? WHERE uid=?`, localPath, uid)
-	return err
-}
-
 // GetAttachment returns a single attachment by UID (nil if not found).
 func (s *Store) GetAttachment(uid string) (*Attachment, error) {
 	row := s.db.QueryRow(`
@@ -243,31 +237,6 @@ func (s *Store) ListAttachments(memoUID string) ([]*Attachment, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
-}
-
-// DeleteAttachment removes an attachment record by UID.
-func (s *Store) DeleteAttachment(uid string) error {
-	_, err := s.db.Exec(`DELETE FROM attachments WHERE uid=?`, uid)
-	return err
-}
-
-// AllAttachmentUIDs returns the set of all locally recorded attachment UIDs
-// (for delete reconciliation).
-func (s *Store) AllAttachmentUIDs() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT uid FROM attachments`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	set := make(map[string]bool)
-	for rows.Next() {
-		var uid string
-		if err := rows.Scan(&uid); err != nil {
-			return nil, err
-		}
-		set[uid] = true
-	}
-	return set, rows.Err()
 }
 
 func scanAttachment(row scannable) (*Attachment, error) {
