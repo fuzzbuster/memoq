@@ -301,6 +301,7 @@ var resourceVerbSpecs = map[string][]resourceVerbSpec{
 		verb("comments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/comments")),
 		verb("comment", methodPost, argsOne, true, onePath("/api/v1/memos/", "/comments")),
 		verb("relations", methodGet, argsOne, false, onePath("/api/v1/memos/", "/relations")),
+		handlerVerb("relate", cmdMemoRelate),
 		verb("set-relations", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/relations")),
 		verb("reactions", methodGet, argsOne, false, onePath("/api/v1/memos/", "/reactions")),
 		verb("react", methodPost, argsOne, true, onePath("/api/v1/memos/", "/reactions")),

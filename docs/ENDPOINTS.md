@@ -19,6 +19,7 @@ Last reconciled against upstream `main` proto files.
 | `memo comments <uid>` | GET | `/api/v1/memos/<uid>/comments` |
 | `memo comment <uid>` | POST | `/api/v1/memos/<uid>/comments` |
 | `memo relations <uid>` | GET | `/api/v1/memos/<uid>/relations` |
+| `memo relate <uid> <related-uid>` | GET + PATCH | `/api/v1/memos/<uid>/relations` |
 | `memo set-relations <uid>` | PATCH | `/api/v1/memos/<uid>/relations` |
 | `memo reactions <uid>` | GET | `/api/v1/memos/<uid>/reactions` |
 | `memo react <uid>` | POST | `/api/v1/memos/<uid>/reactions` |

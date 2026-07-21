@@ -229,6 +229,8 @@ memoq memo delete <uid> --yes
 memoq memo comments <uid>
 memoq memo comment <uid> --field content='a reply'
 memoq memo relations <uid>
+memoq memo relate <uid> <related-uid>
+memoq memo set-relations <uid> --body '<full replacement JSON>'
 memoq memo reactions <uid>
 memoq memo react <uid> --field reactionType=THUMBS_UP
 memoq memo unreact <uid> <reactionID>
@@ -256,6 +258,11 @@ memoq instance setting
 memoq instance stats
 memoq ai transcribe --field <...>
 ```
+
+Use `memo relate` to add a `REFERENCE` between memos. It preserves existing
+relations and uses the object-based relation format from Memos `v0.29.1`.
+`memo set-relations` replaces the complete relation set; use it only when an
+exact body is already available.
 
 Run `memoq <resource> --help` (for example, `memoq user --help`) to print its verb list.
 

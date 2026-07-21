@@ -8,6 +8,22 @@ full coverage of the Memos v1 REST API.
 
 Every read command supports `--json`; nothing ever prompts for input.
 
+## Memos compatibility
+
+As of 2026-07-18, the latest stable Memos release is `v0.29.1`.
+`v0.30.0-rc.1` is available as a pre-release; there is no stable `v0.30.0`
+release yet.
+
+| Memos version | Status in memoq |
+|---|---|
+| `v0.29.1` | Stable compatibility baseline; object-based relation requests covered by contract tests |
+| `v0.30.0-rc.1` | Pre-release compatibility; relation requests covered by contract tests |
+
+These are deterministic HTTP contract tests using local mock servers, not a
+live Memos end-to-end test matrix. The generic `memoq api` command and raw
+resource commands may work with other Memos v1 releases, but they are not part
+of the stated compatibility baseline.
+
 ## Install
 
 Requires Go 1.24+. Build a single self-contained binary (~15 MB, pure Go, no
@@ -103,7 +119,7 @@ API coverage independent of the local cache.
 
 | Group | Verbs |
 |---|---|
-| `memo` | `list get create update delete comments comment relations set-relations reactions react unreact attachments set-attachments shares share unshare link-metadata` |
+| `memo` | `list get create update delete comments comment relations relate set-relations reactions react unreact attachments set-attachments shares share unshare link-metadata` |
 | `attachment` | `list get create update delete batch-delete pull` |
 | `user` | `list get create update delete all-stats stats settings setting update-setting tokens create-token delete-token webhooks` |
 | `auth` | `me signin signout refresh` |
@@ -131,6 +147,7 @@ memoq memo create --field content='hi' --field visibility=PRIVATE
 memoq memo update <uid> --field pinned=true --query updateMask=pinned
 memoq memo delete <uid> --dry-run
 memoq memo delete <uid> --yes
+memoq memo relate <uid> <related-uid>
 memoq user get me
 memoq instance profile
 
@@ -147,6 +164,10 @@ Run any group with no verb (e.g. `memoq user`) to print its verb list.
 > sync when `--sync` is supplied. A cache-sync failure after a successful remote
 > write is reported on stderr without converting the completed write into a
 > command failure; run `memoq sync` to repair the stale cache.
+>
+> `memo relate` adds a `REFERENCE` while preserving existing relations. It
+> uses the object-based relation format from the stable Memos `v0.29.1` API.
+> `memo set-relations` remains available for full replacement.
 
 ### Safe automation
 

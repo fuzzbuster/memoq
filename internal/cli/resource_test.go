@@ -266,6 +266,21 @@ func TestResourceGroupNoVerbShowsUsage(t *testing.T) {
 	}
 }
 
+func TestMemoRelateRequiresTwoMemoUIDs(t *testing.T) {
+	if err := Run([]string{"memo", "relate", "source"}); err == nil {
+		t.Fatal("memo relate with one UID should fail")
+	}
+}
+
+func TestMemoResourceVerbsIncludeRelate(t *testing.T) {
+	for _, verb := range resourceVerbs("memo") {
+		if verb == "relate" {
+			return
+		}
+	}
+	t.Fatal("memo resource verbs do not include relate")
+}
+
 func TestIsResourceGroup(t *testing.T) {
 	for _, g := range []string{"memo", "attachment", "user", "auth", "shortcut", "instance", "ai", "api"} {
 		if !isResourceGroup(g) {
