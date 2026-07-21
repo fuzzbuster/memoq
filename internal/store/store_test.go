@@ -70,9 +70,9 @@ func TestUpsert_UpdatesExisting(t *testing.T) {
 		t.Errorf("update did not overwrite: %+v", got)
 	}
 	// still exactly one row
-	all, _ := s.AllUIDs()
-	if len(all) != 1 {
-		t.Errorf("expected 1 row after upsert-update, got %d", len(all))
+	snapshot, _ := s.MemoHashSnapshot()
+	if len(snapshot) != 1 {
+		t.Errorf("expected 1 row after upsert-update, got %d", len(snapshot))
 	}
 }
 
@@ -92,38 +92,100 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-func TestHashByUID(t *testing.T) {
+func TestDelete_RemovesAttachmentMetadata(t *testing.T) {
 	s := newTestStore(t)
-	mustUpsert(t, s, &Memo{UID: "h", Content: "c", ContentHash: "abc", Visibility: "PRIVATE"})
-
-	h, ok, err := s.HashByUID("h")
-	if err != nil {
-		t.Fatalf("HashByUID: %v", err)
+	mustUpsert(t, s, &Memo{UID: "d", Content: "bye", Visibility: "PRIVATE"})
+	if err := s.UpsertAttachment(&Attachment{UID: "linked", MemoUID: "d"}); err != nil {
+		t.Fatal(err)
 	}
-	if !ok || h != "abc" {
-		t.Errorf("HashByUID = (%q,%v), want (abc,true)", h, ok)
+	if err := s.UpsertAttachment(&Attachment{UID: "other", MemoUID: "keep"}); err != nil {
+		t.Fatal(err)
 	}
 
-	_, ok, err = s.HashByUID("missing")
-	if err != nil {
-		t.Fatalf("HashByUID(missing): %v", err)
+	if err := s.Delete("d"); err != nil {
+		t.Fatal(err)
 	}
-	if ok {
-		t.Error("HashByUID(missing) reported exists=true")
+	if got, err := s.GetAttachment("linked"); err != nil || got != nil {
+		t.Fatalf("linked attachment survived memo delete: attachment=%+v err=%v", got, err)
+	}
+	if got, err := s.GetAttachment("other"); err != nil || got == nil {
+		t.Fatalf("unrelated attachment was deleted: attachment=%+v err=%v", got, err)
 	}
 }
 
-func TestAllUIDs(t *testing.T) {
+func TestMemoHashSnapshot(t *testing.T) {
 	s := newTestStore(t)
-	for _, uid := range []string{"a", "b", "c"} {
-		mustUpsert(t, s, &Memo{UID: uid, Content: "x", Visibility: "PRIVATE"})
-	}
-	set, err := s.AllUIDs()
+	mustUpsert(t, s, &Memo{UID: "h", Content: "c", ContentHash: "abc", Visibility: "PRIVATE"})
+
+	snapshot, err := s.MemoHashSnapshot()
 	if err != nil {
-		t.Fatalf("AllUIDs: %v", err)
+		t.Fatal(err)
 	}
-	if len(set) != 3 || !set["a"] || !set["b"] || !set["c"] {
-		t.Errorf("AllUIDs = %v", set)
+	if len(snapshot) != 1 || snapshot["h"] != "abc" {
+		t.Errorf("MemoHashSnapshot = %v", snapshot)
+	}
+}
+
+func TestReconcileSnapshot_PreservesConcurrentChanges(t *testing.T) {
+	s := newTestStore(t)
+	mustUpsert(t, s, &Memo{UID: "updated", Content: "old", ContentHash: "old", Visibility: "PRIVATE"})
+	mustUpsert(t, s, &Memo{UID: "deleted", Content: "old", ContentHash: "old", Visibility: "PRIVATE"})
+	baseline, err := s.MemoHashSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustUpsert(t, s, &Memo{UID: "updated", Content: "local", ContentHash: "local", Visibility: "PRIVATE"})
+	if err := s.Delete("deleted"); err != nil {
+		t.Fatal(err)
+	}
+	mustUpsert(t, s, &Memo{UID: "new", Content: "local", ContentHash: "local", Visibility: "PRIVATE"})
+
+	result, err := s.ReconcileSnapshot(baseline, []*Memo{
+		{UID: "updated", Content: "remote", ContentHash: "remote", Visibility: "PRIVATE"},
+		{UID: "deleted", Content: "remote", ContentHash: "remote", Visibility: "PRIVATE"},
+		{UID: "new", Content: "remote", ContentHash: "remote", Visibility: "PRIVATE"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Preserved != 3 || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("ReconcileSnapshot result = %+v", result)
+	}
+	if got, _ := s.Get("updated"); got == nil || got.Content != "local" {
+		t.Errorf("concurrent update was overwritten: %+v", got)
+	}
+	if got, _ := s.Get("deleted"); got != nil {
+		t.Errorf("concurrent delete was resurrected: %+v", got)
+	}
+	if got, _ := s.Get("new"); got == nil || got.Content != "local" {
+		t.Errorf("concurrent insert was overwritten: %+v", got)
+	}
+}
+
+func TestReconcileSnapshot_DeletesAttachmentsWithMemo(t *testing.T) {
+	s := newTestStore(t)
+	mustUpsert(t, s, &Memo{UID: "gone", ContentHash: "old", Visibility: "PRIVATE"})
+	if err := s.UpsertAttachment(&Attachment{UID: "linked", MemoUID: "gone"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := s.MemoHashSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.ReconcileSnapshot(baseline, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 1 {
+		t.Fatalf("ReconcileSnapshot result = %+v", result)
+	}
+	if memo, _ := s.Get("gone"); memo != nil {
+		t.Errorf("memo survived reconciliation: %+v", memo)
+	}
+	if attachment, _ := s.GetAttachment("linked"); attachment != nil {
+		t.Errorf("attachment survived reconciliation: %+v", attachment)
 	}
 }
 

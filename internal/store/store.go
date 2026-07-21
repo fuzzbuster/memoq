@@ -21,7 +21,16 @@ type Memo struct {
 	Pinned      bool     `json:"pinned"`
 	CreatedTime int64    `json:"created_ts"` // Unix seconds
 	UpdatedTime int64    `json:"updated_ts"` // Unix seconds
-	ContentHash string   `json:"-"`          // MD5 of content, for dedup
+	ContentHash string   `json:"-"`          // fingerprint of cached fields, for dedup
+}
+
+// ReconcileResult summarizes a transactional remote snapshot reconciliation.
+type ReconcileResult struct {
+	Added     int
+	Updated   int
+	Skipped   int
+	Deleted   int
+	Preserved int
 }
 
 // SearchHit is a memo plus its FTS relevance rank (lower = more relevant).
@@ -269,41 +278,124 @@ func (s *Store) Upsert(m *Memo) error {
 	return err
 }
 
-// Delete removes a memo by UID.
+// Delete removes a memo and its attachment metadata by UID.
 func (s *Store) Delete(uid string) error {
-	_, err := s.db.Exec(`DELETE FROM memos WHERE uid=?`, uid)
-	return err
-}
-
-// HashByUID returns the stored content hash for a memo, and whether it exists.
-func (s *Store) HashByUID(uid string) (string, bool, error) {
-	var h string
-	err := s.db.QueryRow(`SELECT content_hash FROM memos WHERE uid=?`, uid).Scan(&h)
-	if err == sql.ErrNoRows {
-		return "", false, nil
-	}
+	tx, err := s.db.Begin()
 	if err != nil {
-		return "", false, err
+		return err
 	}
-	return h, true, nil
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM attachments WHERE memo_uid=?`, uid); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM memos WHERE uid=?`, uid); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// AllUIDs returns the set of all locally stored UIDs (for delete reconciliation).
-func (s *Store) AllUIDs() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT uid FROM memos`)
+// MemoHashSnapshot returns the current UID-to-fingerprint map for CAS reconciliation.
+func (s *Store) MemoHashSnapshot() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT uid, content_hash FROM memos`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	set := make(map[string]bool)
+	snapshot := make(map[string]string)
 	for rows.Next() {
-		var uid string
-		if err := rows.Scan(&uid); err != nil {
+		var uid, hash string
+		if err := rows.Scan(&uid, &hash); err != nil {
 			return nil, err
 		}
-		set[uid] = true
+		snapshot[uid] = hash
 	}
-	return set, rows.Err()
+	return snapshot, rows.Err()
+}
+
+// ReconcileSnapshot applies a complete remote snapshot without overwriting
+// local writes that occurred after baseline was captured.
+func (s *Store) ReconcileSnapshot(baseline map[string]string, remote []*Memo) (*ReconcileResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	result := &ReconcileResult{}
+	remoteUIDs := make(map[string]bool, len(remote))
+	for _, memo := range remote {
+		remoteUIDs[memo.UID] = true
+		oldHash, existed := baseline[memo.UID]
+		if existed && oldHash == memo.ContentHash {
+			result.Skipped++
+			continue
+		}
+
+		var sqlResult sql.Result
+		if existed {
+			sqlResult, err = tx.Exec(`
+				UPDATE memos SET
+					content=?, tags=?, visibility=?, pinned=?,
+					created_ts=?, updated_ts=?, content_hash=?
+				WHERE uid=? AND content_hash=?`,
+				memo.Content, strings.Join(memo.Tags, " "), memo.Visibility, boolToInt(memo.Pinned),
+				memo.CreatedTime, memo.UpdatedTime, memo.ContentHash, memo.UID, oldHash)
+		} else {
+			sqlResult, err = tx.Exec(`
+				INSERT INTO memos(uid,content,tags,visibility,pinned,created_ts,updated_ts,content_hash)
+				VALUES(?,?,?,?,?,?,?,?)
+				ON CONFLICT(uid) DO NOTHING`,
+				memo.UID, memo.Content, strings.Join(memo.Tags, " "), memo.Visibility,
+				boolToInt(memo.Pinned), memo.CreatedTime, memo.UpdatedTime, memo.ContentHash)
+		}
+		if err != nil {
+			return nil, err
+		}
+		affected, err := sqlResult.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			result.Preserved++
+		} else if existed {
+			result.Updated++
+		} else {
+			result.Added++
+		}
+	}
+
+	for uid, oldHash := range baseline {
+		if remoteUIDs[uid] {
+			continue
+		}
+		sqlResult, err := tx.Exec(`DELETE FROM memos WHERE uid=? AND content_hash=?`, uid, oldHash)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := sqlResult.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			result.Preserved++
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM attachments WHERE memo_uid=?`, uid); err != nil {
+			return nil, err
+		}
+		result.Deleted++
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO meta(key,val) VALUES('last_sync_unix',?)
+		 ON CONFLICT(key) DO UPDATE SET val=excluded.val`,
+		fmt.Sprintf("%d", time.Now().Unix())); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // --- reads ------------------------------------------------------------------

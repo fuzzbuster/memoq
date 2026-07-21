@@ -164,9 +164,7 @@ func TestListAll_FollowsPagination(t *testing.T) {
 	}
 }
 
-func TestListAll_StopsOnEmptyPage(t *testing.T) {
-	// A server that always returns a nextPageToken but eventually an empty memo
-	// slice must not loop forever.
+func TestListAll_RejectsRepeatedPageToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("pageToken") == "" {
 			_, _ = w.Write([]byte(`{"memos":[{"uid":"a"}],"nextPageToken":"more"}`))
@@ -176,12 +174,39 @@ func TestListAll_StopsOnEmptyPage(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "t")
+	if _, err := c.ListAll(context.Background(), 0); err == nil {
+		t.Fatal("ListAll should reject a repeated pagination token")
+	}
+}
+
+func TestListAll_ContinuesAfterEmptyPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("pageToken") {
+		case "":
+			_, _ = w.Write([]byte(`{"memos":[{"uid":"a"}],"nextPageToken":"empty"}`))
+		case "empty":
+			_, _ = w.Write([]byte(`{"memos":[],"nextPageToken":"last"}`))
+		case "last":
+			_, _ = w.Write([]byte(`{"memos":[{"uid":"b"}]}`))
+		default:
+			t.Fatalf("unexpected page token %q", r.URL.Query().Get("pageToken"))
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "t")
 	all, err := c.ListAll(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 1 {
-		t.Errorf("got %d, want 1 (loop must stop on empty page)", len(all))
+	if len(all) != 2 || all[0].UID != "a" || all[1].UID != "b" {
+		t.Errorf("ListAll returned %+v, want memos a and b", all)
+	}
+}
+
+func TestListAll_RejectsMissingMemosField(t *testing.T) {
+	c, _ := mockServer(t, http.StatusOK, `{}`)
+	if _, err := c.ListAll(context.Background(), 0); err == nil {
+		t.Fatal("ListAll should reject a response without the memos field")
 	}
 }
 
@@ -315,18 +340,12 @@ func TestTagList(t *testing.T) {
 	}
 }
 
-func TestContentMD5_StableAndDistinct(t *testing.T) {
-	a := Memo{Content: "same"}
-	b := Memo{Content: "same"}
-	c := Memo{Content: "different"}
-	if a.ContentMD5() != b.ContentMD5() {
-		t.Error("identical content must hash equally")
-	}
-	if a.ContentMD5() == c.ContentMD5() {
-		t.Error("different content must hash differently")
-	}
-	if len(a.ContentMD5()) != 32 {
-		t.Errorf("MD5 hex length = %d, want 32", len(a.ContentMD5()))
+func TestCacheMD5IncludesCachedMetadata(t *testing.T) {
+	base := Memo{Content: "same", Visibility: "PRIVATE"}
+	changed := base
+	changed.Pinned = true
+	if base.CacheMD5() == changed.CacheMD5() {
+		t.Fatal("cache hash should change when cached metadata changes")
 	}
 }
 

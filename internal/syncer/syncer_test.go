@@ -101,6 +101,30 @@ func TestSync_UpdatesChanged(t *testing.T) {
 	}
 }
 
+func TestSync_UpdatesMetadataWhenContentIsUnchanged(t *testing.T) {
+	sy, st, ms := newSyncEnv(t)
+	ms.set(`{"memos":[{"uid":"a","content":"same","visibility":"PRIVATE"}]}`)
+	if _, err := sy.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ms.set(`{"memos":[{"uid":"a","content":"same","visibility":"PUBLIC","pinned":true}]}`)
+	res, err := sy.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Updated != 1 || res.Skipped != 0 {
+		t.Fatalf("metadata sync = %+v, want Updated=1", res)
+	}
+	got, err := st.Get("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Visibility != "PUBLIC" || !got.Pinned {
+		t.Errorf("cached metadata = %+v, want PUBLIC and pinned", got)
+	}
+}
+
 func TestSync_ReconcilesDeletions(t *testing.T) {
 	sy, st, ms := newSyncEnv(t)
 	ms.set(`{"memos":[
@@ -223,6 +247,142 @@ func TestSync_ServerErrorPropagates(t *testing.T) {
 	sy := New(memos.New(srv.URL, "t"), st)
 	if _, err := sy.Sync(context.Background()); err == nil {
 		t.Error("expected error to propagate from server 500")
+	}
+}
+
+func TestSync_MalformedEmptyResponseDoesNotDeleteCache(t *testing.T) {
+	sy, st, ms := newSyncEnv(t)
+	mustMemo := &store.Memo{UID: "keep", Content: "local", Visibility: "PRIVATE"}
+	if err := st.Upsert(mustMemo); err != nil {
+		t.Fatal(err)
+	}
+	ms.set(`{}`)
+
+	if _, err := sy.Sync(context.Background()); err == nil {
+		t.Fatal("Sync should reject a list response without the memos field")
+	}
+	if got, err := st.Get("keep"); err != nil || got == nil {
+		t.Fatalf("local memo was deleted after malformed response: memo=%+v err=%v", got, err)
+	}
+}
+
+func TestSync_DoesNotDeleteConcurrentLocalWrite(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		_, _ = w.Write([]byte(`{"memos":[]}`))
+	}))
+	defer srv.Close()
+	st, err := store.Open(filepath.Join(t.TempDir(), "concurrent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sy := New(memos.New(srv.URL, "t"), st)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sy.Sync(context.Background())
+		done <- err
+	}()
+	<-requestStarted
+	writeErr := st.Upsert(&store.Memo{UID: "new", Content: "local", Visibility: "PRIVATE"})
+	close(releaseResponse)
+	syncErr := <-done
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if syncErr != nil {
+		t.Fatal(syncErr)
+	}
+	if got, err := st.Get("new"); err != nil || got == nil {
+		t.Fatalf("concurrent local write was deleted: memo=%+v err=%v", got, err)
+	}
+}
+
+func TestSync_PreservesConcurrentUpdate(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		_, _ = w.Write([]byte(`{"memos":[{"uid":"same","content":"remote","visibility":"PRIVATE"}]}`))
+	}))
+	defer srv.Close()
+	st, err := store.Open(filepath.Join(t.TempDir(), "concurrent-update.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Upsert(&store.Memo{UID: "same", Content: "old", ContentHash: "old", Visibility: "PRIVATE"}); err != nil {
+		t.Fatal(err)
+	}
+	sy := New(memos.New(srv.URL, "t"), st)
+
+	done := make(chan struct {
+		result *Result
+		err    error
+	}, 1)
+	go func() {
+		result, err := sy.Sync(context.Background())
+		done <- struct {
+			result *Result
+			err    error
+		}{result, err}
+	}()
+	<-requestStarted
+	if err := st.Upsert(&store.Memo{UID: "same", Content: "local", ContentHash: "local", Visibility: "PRIVATE"}); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseResponse)
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.result.Preserved != 1 {
+		t.Fatalf("sync result = %+v, want Preserved=1", outcome.result)
+	}
+	if got, err := st.Get("same"); err != nil || got == nil || got.Content != "local" {
+		t.Fatalf("concurrent update was overwritten: memo=%+v err=%v", got, err)
+	}
+}
+
+func TestSync_DoesNotResurrectConcurrentDelete(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		_, _ = w.Write([]byte(`{"memos":[{"uid":"same","content":"remote","visibility":"PRIVATE"}]}`))
+	}))
+	defer srv.Close()
+	st, err := store.Open(filepath.Join(t.TempDir(), "concurrent-delete.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Upsert(&store.Memo{UID: "same", Content: "old", ContentHash: "old", Visibility: "PRIVATE"}); err != nil {
+		t.Fatal(err)
+	}
+	sy := New(memos.New(srv.URL, "t"), st)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sy.Sync(context.Background())
+		done <- err
+	}()
+	<-requestStarted
+	if err := st.Delete("same"); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseResponse)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.Get("same"); err != nil || got != nil {
+		t.Fatalf("concurrent delete was resurrected: memo=%+v err=%v", got, err)
 	}
 }
 

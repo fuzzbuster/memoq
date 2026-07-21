@@ -1,7 +1,5 @@
-// Package syncer performs incremental synchronization between a remote Memos
-// server and the local SQLite store. It uses content MD5 hashes to skip
-// unchanged notes and reconciles deletions, mirroring the upstream project's
-// approach but without vectorization.
+// Package syncer reconciles a complete remote Memos snapshot with the local
+// SQLite store, using fingerprints to skip unchanged notes.
 package syncer
 
 import (
@@ -14,12 +12,13 @@ import (
 
 // Result summarizes a sync run.
 type Result struct {
-	Added    int           `json:"added"`
-	Updated  int           `json:"updated"`
-	Skipped  int           `json:"skipped"`
-	Deleted  int           `json:"deleted"`
-	Total    int           `json:"total_remote"`
-	Duration time.Duration `json:"-"`
+	Added     int           `json:"added"`
+	Updated   int           `json:"updated"`
+	Skipped   int           `json:"skipped"`
+	Deleted   int           `json:"deleted"`
+	Preserved int           `json:"preserved"`
+	Total     int           `json:"total_remote"`
+	Duration  time.Duration `json:"-"`
 }
 
 // Syncer wires a client and store together.
@@ -41,58 +40,32 @@ func (s *Syncer) Sync(ctx context.Context) (*Result, error) {
 	start := time.Now()
 	res := &Result{}
 
+	baseline, err := s.st.MemoHashSnapshot()
+	if err != nil {
+		return nil, err
+	}
+
 	remote, err := s.client.ListAll(ctx, 100)
 	if err != nil {
 		return nil, err
 	}
 	res.Total = len(remote)
 
-	remoteUIDs := make(map[string]bool, len(remote))
+	cached := make([]*store.Memo, 0, len(remote))
 	for _, rm := range remote {
-		uid := rm.UIDValue()
-		if uid == "" {
-			continue
-		}
-		remoteUIDs[uid] = true
-
-		hash := rm.ContentMD5()
-		oldHash, exists, err := s.st.HashByUID(uid)
-		if err != nil {
-			return nil, err
-		}
-		if exists && oldHash == hash {
-			res.Skipped++
-			continue
-		}
-
-		m := toStoreMemo(rm, hash)
-		if err := s.st.Upsert(m); err != nil {
-			return nil, err
-		}
-		if exists {
-			res.Updated++
-		} else {
-			res.Added++
-		}
+		hash := rm.CacheMD5()
+		cached = append(cached, toStoreMemo(rm, hash))
 	}
 
-	// Reconcile deletions: anything local but not remote is gone.
-	localUIDs, err := s.st.AllUIDs()
+	reconciled, err := s.st.ReconcileSnapshot(baseline, cached)
 	if err != nil {
 		return nil, err
 	}
-	for uid := range localUIDs {
-		if !remoteUIDs[uid] {
-			if err := s.st.Delete(uid); err != nil {
-				return nil, err
-			}
-			res.Deleted++
-		}
-	}
-
-	if err := s.st.SetLastSyncNow(); err != nil {
-		return nil, err
-	}
+	res.Added = reconciled.Added
+	res.Updated = reconciled.Updated
+	res.Skipped = reconciled.Skipped
+	res.Deleted = reconciled.Deleted
+	res.Preserved = reconciled.Preserved
 	res.Duration = time.Since(start)
 	return res, nil
 }

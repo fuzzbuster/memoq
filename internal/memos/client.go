@@ -221,9 +221,39 @@ func (m *Memo) TagList() []string {
 	return nil
 }
 
-// ContentMD5 returns the hex MD5 of the memo content, used for change dedup.
-func (m *Memo) ContentMD5() string {
-	sum := md5.Sum([]byte(m.Content))
+// CacheMD5 fingerprints every memo field persisted in the local cache.
+func (m *Memo) CacheMD5() string {
+	visibility := m.Visibility
+	if visibility == "" {
+		visibility = "PRIVATE"
+	}
+	tags := m.TagList()
+	if tags == nil {
+		tags = []string{}
+	}
+	var created, updated int64
+	if m.CreateTime != nil {
+		created = m.CreateTime.Unix()
+	}
+	if m.UpdateTime != nil {
+		updated = m.UpdateTime.Unix()
+	}
+	data, _ := json.Marshal(struct {
+		Content    string
+		Tags       []string
+		Visibility string
+		Pinned     bool
+		Created    int64
+		Updated    int64
+	}{
+		Content:    m.Content,
+		Tags:       tags,
+		Visibility: visibility,
+		Pinned:     m.Pinned,
+		Created:    created,
+		Updated:    updated,
+	})
+	sum := md5.Sum(data)
 	return hex.EncodeToString(sum[:])
 }
 
@@ -235,8 +265,8 @@ func (m *Memo) ContentMD5() string {
 
 // listMemosResponse is the paginated envelope returned by GET /api/v1/memos.
 type listMemosResponse struct {
-	Memos         []*Memo `json:"memos"`
-	NextPageToken string  `json:"nextPageToken"`
+	Memos         *[]*Memo `json:"memos"`
+	NextPageToken string   `json:"nextPageToken"`
 }
 
 // ListAll fetches every memo the token can see, following pagination until the
@@ -245,6 +275,7 @@ type listMemosResponse struct {
 func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 	var all []*Memo
 	pageToken := ""
+	seenTokens := map[string]bool{"": true}
 	for {
 		ps := ""
 		if pageSize > 0 {
@@ -258,10 +289,22 @@ func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 		if err := c.do(ctx, methodGet, path, nil, &resp); err != nil {
 			return nil, err
 		}
-		all = append(all, resp.Memos...)
-		if resp.NextPageToken == "" || len(resp.Memos) == 0 {
+		if resp.Memos == nil {
+			return nil, fmt.Errorf("list memos response missing memos field")
+		}
+		for _, memo := range *resp.Memos {
+			if memo == nil || memo.UIDValue() == "" {
+				return nil, fmt.Errorf("list memos response contains memo without uid")
+			}
+		}
+		all = append(all, (*resp.Memos)...)
+		if resp.NextPageToken == "" {
 			break
 		}
+		if seenTokens[resp.NextPageToken] {
+			return nil, fmt.Errorf("list memos pagination repeated token %q", resp.NextPageToken)
+		}
+		seenTokens[resp.NextPageToken] = true
 		pageToken = resp.NextPageToken
 	}
 	return all, nil

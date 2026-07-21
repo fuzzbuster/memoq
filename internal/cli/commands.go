@@ -211,7 +211,7 @@ func cmdCreate(args []string) error {
 		Pinned:      rm.Pinned,
 		CreatedTime: nowOr(rm.CreateTime),
 		UpdatedTime: nowOr(rm.UpdateTime),
-		ContentHash: rm.ContentMD5(),
+		ContentHash: rm.CacheMD5(),
 	}); err != nil {
 		cacheStatus = "stale"
 		warnCache(err)
@@ -317,7 +317,7 @@ func cmdUpdate(args []string) error {
 		Pinned:      rm.Pinned,
 		CreatedTime: nowOr(rm.CreateTime),
 		UpdatedTime: nowOr(rm.UpdateTime),
-		ContentHash: rm.ContentMD5(),
+		ContentHash: rm.CacheMD5(),
 	}); err != nil {
 		cacheStatus = "stale"
 		warnCache(err)
