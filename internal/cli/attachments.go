@@ -84,7 +84,9 @@ func cmdAttachmentPull(args []string) error {
 		}
 		// Externally-hosted attachments have no server blob to fetch.
 		if ra.ExternalLink != "" {
-			_ = a.store.UpsertAttachment(rec)
+			if err := a.store.UpsertAttachment(rec); err != nil {
+				return err
+			}
 			results = append(results, pulled{id, ra.Filename, ra.Type, ra.Size, "", true})
 			continue
 		}
