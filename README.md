@@ -10,14 +10,11 @@ Every read command supports `--json`; nothing ever prompts for input.
 
 ## Memos compatibility
 
-As of 2026-07-18, the latest stable Memos release is `v0.29.1`.
-`v0.30.0-rc.1` is available as a pre-release; there is no stable `v0.30.0`
-release yet.
+As of 2026-08-13, the latest stable Memos release is `v0.30.0`.
 
 | Memos version | Status in memoq |
 |---|---|
-| `v0.29.1` | Stable compatibility baseline; object-based relation requests covered by contract tests |
-| `v0.30.0-rc.1` | Pre-release compatibility; relation requests covered by contract tests |
+| `v0.30.0` | Stable compatibility baseline; attachment and object-based relation requests covered by contract tests |
 
 These are deterministic HTTP contract tests using local mock servers, not a
 live Memos end-to-end test matrix. The generic `memoq api` command and raw
@@ -139,6 +136,10 @@ Supply request bodies / query params with:
 | `--dry-run` | Print the planned request without sending it |
 | `--yes` | Confirm a destructive operation |
 | `--sync` | Sync the local memo cache after a successful request |
+| `--json` | Accepted for consistency; resource commands always emit JSON |
+
+`attachment create` additionally accepts `--file <path>`. `memo set-attachments`
+accepts repeatable `--attachment attachments/<id>` values.
 
 ```bash
 # typed resource verbs
@@ -148,6 +149,9 @@ memoq memo update <uid> --field pinned=true --query updateMask=pinned
 memoq memo delete <uid> --dry-run
 memoq memo delete <uid> --yes
 memoq memo relate <uid> <related-uid>
+memoq memo attachments <uid> --json
+memoq memo set-attachments <uid> --attachment attachments/<id>
+memoq attachment create --file ./document.pdf
 memoq user get me
 memoq instance profile
 
@@ -166,7 +170,7 @@ Run any group with no verb (e.g. `memoq user`) to print its verb list.
 > command failure; run `memoq sync` to repair the stale cache.
 >
 > `memo relate` adds a `REFERENCE` while preserving existing relations. It
-> uses the object-based relation format from the stable Memos `v0.29.1` API.
+> uses the object-based relation format from the stable Memos `v0.30.0` API.
 > `memo set-relations` remains available for full replacement.
 
 ### Safe automation
@@ -231,6 +235,12 @@ attachment bytes as JSON base64, not multipart upload. Large files remain subjec
 to the instance upload limit (32 MiB by default when the server has no configured
 limit). If an attachment upload fails after the memo is created, the command
 reports the created memo UID and does not delete it.
+
+To upload independently, use `memoq attachment create --file <path>`. Associate
+the result with an existing memo using repeatable
+`memoq memo set-attachments <uid> --attachment attachments/<id>`. This replaces
+the memo's complete attachment set; clear it explicitly with
+`--body '{"attachments":[]}'`.
 
 ## Layout
 

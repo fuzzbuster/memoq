@@ -4,11 +4,12 @@ description: >
   Query and manage a personal Memos knowledge base from the command line via the
   `memoq` CLI — a non-interactive, scriptable tool built for coding agents (no TUI,
   no chat/MCP/LLM subcommands). Use when the user asks to search / list / read /
-  create / update / delete their notes or memos, look up something they "wrote down
-  before", or when you need to persist a note for later. Every read command supports
-  `--json` for machine parsing and auto-syncs from the remote Memos server so results
-  are fresh. Trigger on: "search my notes", "查一下我记的笔记/备忘", "记一条备忘",
-  "把这个存到 memos", "list my memos with tag X".
+  create / update / delete their notes or memos, upload / download / associate memo
+  attachments, look up something they "wrote down before", or persist a note for
+  later. Every read command supports `--json` for machine parsing and auto-syncs from
+  the remote Memos server so results are fresh. Trigger on: "search my notes",
+  "查一下我记的笔记/备忘", "记一条备忘", "把这个存到 memos",
+  "attach this file to my memo", "download the memo attachment".
 ---
 
 # memoq — Memos CLI for coding agents
@@ -216,6 +217,7 @@ Body / query flags shared by every resource verb:
 - `--dry-run` — print the planned request without sending it.
 - `--yes` — confirm a destructive or high-impact operation.
 - `--sync` — sync the local memo cache after a successful request.
+- `--json` — accepted for consistency; resource commands already always emit JSON.
 
 ### Resource groups and verbs
 
@@ -234,12 +236,15 @@ memoq memo set-relations <uid> --body '<full replacement JSON>'
 memoq memo reactions <uid>
 memoq memo react <uid> --field reactionType=THUMBS_UP
 memoq memo unreact <uid> <reactionID>
+memoq memo attachments <uid> --json
+memoq memo set-attachments <uid> --attachment attachments/1
 memoq memo shares <uid>
 memoq memo share <uid> --body '{}' --dry-run
 memoq memo share <uid> --body '{}' --yes
 
 memoq attachment list
 memoq attachment get <id>
+memoq attachment create --file ./document.pdf
 memoq attachment batch-delete --body '{"names":["attachments/1"]}'
 memoq attachment pull <memo-uid>   # download blobs locally (see Attachments below)
 
@@ -260,9 +265,14 @@ memoq ai transcribe --field <...>
 ```
 
 Use `memo relate` to add a `REFERENCE` between memos. It preserves existing
-relations and uses the object-based relation format from Memos `v0.29.1`.
+relations and uses the object-based relation format from Memos `v0.30.0`.
 `memo set-relations` replaces the complete relation set; use it only when an
 exact body is already available.
+
+`attachment create --file <path>` reads and uploads the local file without
+manual base64. To associate uploaded attachments with an existing memo, repeat
+`--attachment attachments/<id>` on `memo set-attachments`; this replaces the
+complete set. Use `--body '{"attachments":[]}'` to clear it.
 
 Run `memoq <resource> --help` (for example, `memoq user --help`) to print its verb list.
 

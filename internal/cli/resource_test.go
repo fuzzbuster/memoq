@@ -3,6 +3,8 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -53,7 +55,7 @@ func TestResourcePaths(t *testing.T) {
 		{"memo reactions", []string{"memo", "reactions", "abc"}, "GET", "/api/v1/memos/abc/reactions"},
 		{"memo react", []string{"memo", "react", "abc", "--field", "reactionType=THUMBS_UP"}, "POST", "/api/v1/memos/abc/reactions"},
 		{"memo unreact", []string{"memo", "unreact", "abc", "r1", "--yes"}, "DELETE", "/api/v1/memos/abc/reactions/r1"},
-		{"memo attachments", []string{"memo", "attachments", "abc"}, "GET", "/api/v1/memos/abc/attachments"},
+		{"memo attachments json", []string{"memo", "attachments", "abc", "--json"}, "GET", "/api/v1/memos/abc/attachments"},
 		{"memo set-attachments", []string{"memo", "set-attachments", "abc", "--body", "{}"}, "PATCH", "/api/v1/memos/abc/attachments"},
 		{"memo shares", []string{"memo", "shares", "abc"}, "GET", "/api/v1/memos/abc/shares"},
 		{"memo share", []string{"memo", "share", "abc", "--body", "{}", "--yes"}, "POST", "/api/v1/memos/abc/shares"},
@@ -169,6 +171,122 @@ func TestBodyBuilding_RawBodyWinsOverFields(t *testing.T) {
 	}
 	if string(raw) != `{"content":"raw"}` {
 		t.Errorf("raw body = %s", raw)
+	}
+}
+
+func TestAttachmentCreateFileBuildsBase64Body(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample.png")
+	if err := os.WriteFile(path, []byte{1, 2, 3}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := stubRunAPI(t)
+	if err := Run([]string{"attachment", "create", "--file", path}); err != nil {
+		t.Fatal(err)
+	}
+	if c.method != "POST" || c.path != "/api/v1/attachments" {
+		t.Fatalf("request = %s %s, want POST /api/v1/attachments", c.method, c.path)
+	}
+	encoded, err := json.Marshal(c.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["filename"] != "sample.png" || body["type"] != "image/png" || body["content"] != "AQID" {
+		t.Fatalf("body = %s", encoded)
+	}
+}
+
+func TestAttachmentCreateFileRejectsExplicitBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample.bin")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stubRunAPI(t)
+	err := Run([]string{"attachment", "create", "--file", path, "--body", `{}`})
+	if err == nil {
+		t.Fatal("--file with --body should fail")
+	}
+}
+
+func TestAttachmentCreateFileUsesDefaultMIMEType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample.unknown-extension")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := stubRunAPI(t)
+	if err := Run([]string{"attachment", "create", "--file", path}); err != nil {
+		t.Fatal(err)
+	}
+	body, ok := c.body.(map[string]any)
+	if !ok {
+		t.Fatalf("body type = %T, want map", c.body)
+	}
+	if body["type"] != "application/octet-stream" {
+		t.Fatalf("type = %q, want application/octet-stream", body["type"])
+	}
+}
+
+func TestAttachmentCreateFileReadErrorDoesNotCallAPI(t *testing.T) {
+	c := stubRunAPI(t)
+	err := Run([]string{"attachment", "create", "--file", filepath.Join(t.TempDir(), "missing.bin")})
+	if err == nil {
+		t.Fatal("missing upload file should fail")
+	}
+	if c.method != "" {
+		t.Fatalf("file read error called API with method %q", c.method)
+	}
+}
+
+func TestMemoSetAttachmentsBuildsEnvelope(t *testing.T) {
+	c := stubRunAPI(t)
+	if err := Run([]string{
+		"memo", "set-attachments", "memo1",
+		"--attachment", "attachments/a",
+		"--attachment", "attachments/b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c.method != "PATCH" || c.path != "/api/v1/memos/memo1/attachments" {
+		t.Fatalf("request = %s %s", c.method, c.path)
+	}
+	encoded, err := json.Marshal(c.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"attachments":[{"name":"attachments/a"},{"name":"attachments/b"}]}` {
+		t.Fatalf("body = %s", encoded)
+	}
+}
+
+func TestMemoSetAttachmentsRejectsExplicitBody(t *testing.T) {
+	c := stubRunAPI(t)
+	err := Run([]string{
+		"memo", "set-attachments", "memo1",
+		"--attachment", "attachments/a",
+		"--field", "attachments=[]",
+	})
+	if err == nil {
+		t.Fatal("--attachment with --field should fail")
+	}
+	if c.method != "" {
+		t.Fatalf("conflicting body inputs called API with method %q", c.method)
+	}
+}
+
+func TestMemoSetAttachmentsRejectsInvalidResourceName(t *testing.T) {
+	c := stubRunAPI(t)
+	err := Run([]string{"memo", "set-attachments", "memo1", "--attachment", "a"})
+	if err == nil {
+		t.Fatal("bare attachment ID should fail")
+	}
+	if c.method != "" {
+		t.Fatalf("invalid attachment name called API with method %q", c.method)
 	}
 }
 

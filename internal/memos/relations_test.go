@@ -96,7 +96,7 @@ func TestAddMemoReference_UsesObjectFormatAndAcceptsEmptySuccess(t *testing.T) {
 	}
 }
 
-func TestAddMemoReference_UsesStableV029ObjectFormat(t *testing.T) {
+func TestAddMemoReference_UsesStableV030ObjectFormat(t *testing.T) {
 	var patchBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -133,7 +133,7 @@ func TestAddMemoReference_UsesStableV029ObjectFormat(t *testing.T) {
 		request.Relations[0].Memo.Name != "memos/source" ||
 		request.Relations[0].RelatedMemo.Name != "memos/target" ||
 		request.Relations[0].Type != "REFERENCE" {
-		t.Errorf("unexpected v0.29 relation: %s", patchBody)
+		t.Errorf("unexpected v0.30 relation: %s", patchBody)
 	}
 }
 

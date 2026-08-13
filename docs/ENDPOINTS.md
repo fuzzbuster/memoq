@@ -5,7 +5,7 @@ the manifest the [Upstream Sync Playbook](./UPSTREAM_SYNC.md) diffs against.
 Each row is `memoq command` → `METHOD path`. Path segments in `<angle>` are
 substituted from positional args; `:verb` suffixes are literal custom verbs.
 
-Last reconciled against upstream `main` proto files.
+Last reconciled against upstream `v0.30.0` proto files.
 
 ## memo (`cmdMemoResource`)
 
@@ -31,6 +31,11 @@ Last reconciled against upstream `main` proto files.
 | `memo unshare <uid> <sid>` | DELETE | `/api/v1/memos/<uid>/shares/<sid>` |
 | `memo link-metadata` | GET | `/api/v1/memos/-/linkMetadata` |
 
+`memo set-attachments` accepts repeatable
+`--attachment attachments/<id>` values and wraps them in the API's required
+`attachments` array. The raw `--body` form remains available, including
+`--body '{"attachments":[]}'` to clear the complete set.
+
 ## attachment (`cmdAttachmentResource`)
 
 | memoq | Method | Path |
@@ -41,6 +46,10 @@ Last reconciled against upstream `main` proto files.
 | `attachment update <id>` | PATCH | `/api/v1/attachments/<id>` |
 | `attachment delete <id>` | DELETE | `/api/v1/attachments/<id>` |
 | `attachment batch-delete` | POST | `/api/v1/attachments:batchDelete` |
+
+`attachment create --file <path>` reads the local file and builds the same
+JSON attachment body, including base64-encoded `content`, before calling the
+listed endpoint.
 
 > `attachment pull <memo-uid>` is not a plain JSON endpoint: it combines
 > `GET /api/v1/memos/<uid>/attachments` (metadata) with the file-server route

@@ -21,8 +21,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"mime"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/example/memoq/internal/syncer"
@@ -134,6 +136,7 @@ type apiFlags struct {
 	dryRun   bool
 	yes      bool
 	sync     bool
+	asJSON   bool
 }
 
 func (f *apiFlags) register(fs *flag.FlagSet) {
@@ -144,6 +147,7 @@ func (f *apiFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.dryRun, "dry-run", false, "preview without sending the request")
 	fs.BoolVar(&f.yes, "yes", false, "confirm destructive operation")
 	fs.BoolVar(&f.sync, "sync", false, "sync the local memo cache after success")
+	fs.BoolVar(&f.asJSON, "json", false, "emit JSON (resource commands always do)")
 }
 
 // buildBody assembles the request body from --body / --body-file / --field.
@@ -174,6 +178,10 @@ func (f *apiFlags) buildBody() (any, error) {
 		return obj, nil
 	}
 	return nil, nil
+}
+
+func (f *apiFlags) hasBodyInput() bool {
+	return f.body != "" || f.bodyFile != "" || len(f.fields) > 0
 }
 
 // queryString renders the collected --query pairs as "?a=b&c=d" (or "").
@@ -417,6 +425,14 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 	fs := flag.NewFlagSet(resource+" "+name, flag.ContinueOnError)
 	af := &apiFlags{}
 	af.register(fs)
+	var uploadFile string
+	var attachmentNames multiFlag
+	if resource == "attachment" && name == "create" {
+		fs.StringVar(&uploadFile, "file", "", "local file to upload")
+	}
+	if resource == "memo" && name == "set-attachments" {
+		fs.Var(&attachmentNames, "attachment", "attachment resource name (repeatable)")
+	}
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -426,9 +442,43 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 	}
 	var body any
 	if spec.Body {
-		body, err = af.buildBody()
-		if err != nil {
-			return err
+		switch {
+		case uploadFile != "":
+			if af.hasBodyInput() {
+				return fmt.Errorf("--file cannot be combined with --body, --body-file, or --field")
+			}
+			content, readErr := os.ReadFile(uploadFile)
+			if readErr != nil {
+				return fmt.Errorf("read attachment file %q: %w", uploadFile, readErr)
+			}
+			filename := filepath.Base(uploadFile)
+			contentType := mime.TypeByExtension(filepath.Ext(filename))
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+			body = map[string]any{
+				"filename": filename,
+				"type":     contentType,
+				"content":  content,
+			}
+		case len(attachmentNames) > 0:
+			if af.hasBodyInput() {
+				return fmt.Errorf("--attachment cannot be combined with --body, --body-file, or --field")
+			}
+			attachments := make([]map[string]string, 0, len(attachmentNames))
+			for _, attachmentName := range attachmentNames {
+				if !strings.HasPrefix(attachmentName, "attachments/") ||
+					strings.TrimPrefix(attachmentName, "attachments/") == "" {
+					return fmt.Errorf("invalid attachment resource name %q (want attachments/<id>)", attachmentName)
+				}
+				attachments = append(attachments, map[string]string{"name": attachmentName})
+			}
+			body = map[string]any{"attachments": attachments}
+		default:
+			body, err = af.buildBody()
+			if err != nil {
+				return err
+			}
 		}
 	}
 	path := spec.Path(pos) + af.queryString()
