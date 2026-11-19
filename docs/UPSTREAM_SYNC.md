@@ -1,192 +1,88 @@
-# Upstream API Sync Playbook
+# Upstream Sync Playbook
 
-How to keep `memoq` in lockstep with the upstream Memos server API
-([github.com/usememos/memos](https://github.com/usememos/memos)) with minimal
-effort and no guesswork.
+Compatibility baseline: Memos **26.10.0**; latest reviewed: **26.11.1**.
+Use pinned release tags, without a `v` prefix for 26.xx.
 
-This doc exists because the Memos v1 API **does drift between releases** — we
-already absorbed one round of renames (see [History](#history)). The workflow
-below turns "did upstream change something?" from an archaeology project into a
-mechanical, ~15-minute diff.
+## Source of truth
 
----
+Inspect `proto/api/*_service.proto` at the minimum and latest refs, together
+with the corresponding server handlers and route registration. REST paths
+start with `/api`, independent of protobuf package naming. The old
+`proto/api/v1` directory and `/api/v1` URLs describe earlier releases.
 
-## 1. Source of truth: the `.proto` files, not the docs
+Eight services currently expose 93 HTTP bindings:
 
-Memos serves its REST API through a **grpc-gateway** generated from the protobuf
-service definitions in [`proto/api/v1/`](https://github.com/usememos/memos/tree/main/proto/api/v1).
-Every HTTP method + path is declared inline via `google.api.http` annotations:
+| Service | RPCs | CLI groups |
+|---|---:|---|
+| MemoService | 20 | memo |
+| AttachmentService | 7 | attachment |
+| UserService | 33 | user, view |
+| AuthService | 4 | auth |
+| InstanceService | 7 | instance |
+| SpaceService | 16 | space, user invitations |
+| IdentityProviderService | 5 | idp |
+| AIService | 1 | ai |
 
-```proto
-rpc ListMemos(ListMemosRequest) returns (ListMemosResponse) {
-  option (google.api.http) = {
-    get: "/api/v1/memos"
-  };
-}
+Also inspect non-proto routes: SSE `/api/sse`, attachment/avatar file downloads,
+and the admin-only ZIP export `/file/users/<username>/export`.
 
-rpc DeleteMemoReaction(DeleteMemoReactionRequest) returns (google.protobuf.Empty) {
-  option (google.api.http) = {
-    delete: "/api/v1/{name=memos/*/reactions/*}"
-  };
-}
-```
+## Release workflow
 
-**Rules that follow from this:**
-
-- The proto annotations are authoritative. Prose docs, blog posts, and the
-  OpenAPI JSON lag behind and are sometimes wrong. Diff the proto.
-- Path templates like `{name=memos/*/reactions/*}` mean the resource name is
-  substituted into the path. In `memoq` we build the concrete path from the
-  positional args (e.g. `unreact <memoUID> <reactionID>` →
-  `/api/v1/memos/<uid>/reactions/<rid>`).
-- **Custom verbs** appear as a `:` suffix (`/api/v1/users:stats`,
-  `/api/v1/{name=users/*}:getStats`, `/api/v1/ai:transcribe`). These are NOT a
-  slash path — the colon is literal. Preserve it exactly.
-
----
-
-## 2. The relevant service files
-
-Each Memos service maps to one `memoq` resource group. Watch these files:
-
-| Proto file (`proto/api/v1/`)   | memoq resource group | Handler in `internal/cli/resource.go` |
-|--------------------------------|----------------------|----------------------------------------|
-| `memo_service.proto`           | `memo`               | `cmdMemoResource`        |
-| `attachment_service.proto`     | `attachment`         | `cmdAttachmentResource`  |
-| `user_service.proto`           | `user`               | `cmdUserResource`        |
-| `auth_service.proto`           | `auth`               | `cmdAuthResource`        |
-| `shortcut_service.proto`       | `shortcut`           | `cmdShortcutResource`    |
-| `instance_service.proto` / `workspace_*` | `instance` | `cmdInstanceResource`    |
-| `markdown_service.proto` / AI  | `ai`                 | `cmdAIResource`          |
-
-> The client's typed hot-path (`internal/memos/client.go`) only depends on the
-> **memo** endpoints (list/get/create/update/delete) plus `auth/me` for `Ping`.
-> Everything else rides on the generic `api`/resource layer, so most upstream
-> churn touches only `resource.go`.
-
-The canonical endpoint list `memoq` currently targets lives in
-[`ENDPOINTS.md`](./ENDPOINTS.md) — that is the manifest you diff against.
-
----
-
-## 3. The sync workflow (do this each upstream release)
-
-### Step 0 — Pin the upstream ref you're comparing to
-```bash
-UPSTREAM=https://raw.githubusercontent.com/usememos/memos/main/proto/api/v1
-# or pin a tag, e.g. .../refs/tags/v0.24.0/proto/api/v1
-```
-
-### Step 1 — Fetch the proto files
-```bash
-mkdir -p /tmp/memos-proto && cd /tmp/memos-proto
-for f in memo_service attachment_service user_service auth_service \
-         shortcut_service instance_service markdown_service; do
-  curl -fsSL "$UPSTREAM/$f.proto" -o "$f.proto" || echo "MISSING: $f (renamed?)"
-done
-```
-A `MISSING` line is itself a signal: a service file was **renamed or split**
-(this is exactly how `workspace_service` → `instance_service` surfaced).
-
-### Step 2 — Extract every HTTP mapping
-Pull the method + path from every `google.api.http` annotation:
-```bash
-grep -nE '(get|post|put|patch|delete):[[:space:]]*"' *.proto \
-  | sed -E 's/.*(get|post|put|patch|delete):[[:space:]]*"([^"]+)".*/\U\1\E \2/' \
-  | sort -u
-```
-This prints a clean `METHOD /api/v1/...` list — the current upstream surface.
-
-### Step 3 — Diff against our manifest
-```bash
-# ENDPOINTS.md keeps one `METHOD /path` per row in a fenced block; extract & diff
-diff <(sort -u our_endpoints.txt) <(sort -u upstream_endpoints.txt)
-```
-- Lines only in **upstream** → new/renamed endpoints to add.
-- Lines only in **ours** → removed/renamed endpoints to drop or remap.
-
-### Step 4 — Reconcile the code
-For each delta:
-1. Update the verb's path in the matching `cmd*Resource` handler in
-   `internal/cli/resource.go`.
-2. Update the verb list in that handler's `resourceUsage(...)` call **and** the
-   help block in `internal/cli/cli.go`.
-3. If a typed client method (`internal/memos/client.go`) is affected (memo CRUD
-   or `Ping`), update it too.
-4. Update [`ENDPOINTS.md`](./ENDPOINTS.md), `README.md`, and
-   `skills/memoq/SKILL.md` command tables.
-
-### Step 5 — Prove it with the path tests
-`internal/cli/resource_test.go` has a table asserting the exact
-`METHOD + path` each verb constructs (via a stubbed `runAPI`). **Add or edit a
-row there for every change**, then:
-```bash
-go test ./... && go vet ./... && gofmt -l .
-```
-The path tests are the safety net: they fail loudly if a rename regresses, with
-no live server required.
-
----
-
-## 4. Why we rarely have to do more than edit paths
-
-`memoq` is deliberately built so upstream drift has a small blast radius:
-
-- **One generic primitive.** Every resource verb funnels through
-  `Client.Do(ctx, method, path, body) → json.RawMessage`. New fields in a
-  request/response body need *no* code change — `--field`, `--body`, and raw
-  JSON output pass them through untouched.
-- **The `api` escape hatch.** `memoq api <METHOD> <PATH>` reaches any endpoint,
-  current or future, even before we add a named verb. Users are never blocked
-  waiting on a release.
-- **Typed layer is minimal.** Only the memo hot-path is typed; that surface is
-  the most stable part of the Memos API.
-
-So in practice a sync is: diff proto → fix a handful of path strings → update a
-few test rows and doc tables. New *capabilities* (new services) are the only
-thing that need genuinely new handlers.
-
----
-
-## 5. Optional: make it a CI guard
-
-Add a scheduled job (weekly / on release tag) that runs Steps 1–3 and fails if
-the diff is non-empty, posting the delta. Sketch:
+1. Pin the minimum and newest supported upstream tags. Retrieve their service
+   directory listings and sources using `gh api`, so newly added services are
+   discovered rather than omitted by a fixed old list.
+2. Extract every `google.api.http` binding, including additional bindings.
+   Compare RPC names, methods, expanded paths, JSON body selectors, request and
+   response fields, enums, resource identifiers, and pagination behavior.
+3. Inspect implementation semantics where they affect client workflows:
+   authorization, quotas, destructive replacement, comments, upload
+   acknowledgments, and binary/streaming routes. Matching endpoint counts alone
+   do not establish compatibility.
+4. Update the table in `internal/cli/resource.go`, typed helpers in
+   `internal/memos`, and the cache behavior only where the new contract requires
+   it. Keep raw JSON available for resource fields outside the cache projection.
+5. Update the independent pinned HTTP snapshot in `TestResourcePaths` from
+   upstream sources. Reconcile [ENDPOINTS.md](ENDPOINTS.md), README, the bundled
+   memoq Skill, and [CHANGELOG.md](../CHANGELOG.md).
+6. Run build, vet, tests, and race tests. Start isolated real server binaries
+   for both minimum and newest versions; verify actual bodies, auth refresh,
+   lifecycle transitions, import/export, and file integrity. Record which
+   optional external integrations were exercised and which were not.
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-UPSTREAM=https://raw.githubusercontent.com/usememos/memos/main/proto/api/v1
-# ... fetch + extract (Steps 1-2) into upstream_endpoints.txt ...
-if ! diff -u docs/endpoints.generated.txt upstream_endpoints.txt; then
-  echo "::warning::Memos upstream API drifted — run the sync playbook (docs/UPSTREAM_SYNC.md)"
-  exit 1
-fi
+gh api 'repos/usememos/memos/contents/proto/api?ref=26.11.1' \
+  --jq '.[] | select(.name | endswith("_service.proto")) | .name'
+gh api 'repos/usememos/memos/contents/proto/api/auth_service.proto?ref=26.11.1' \
+  --jq '.content' | base64 --decode
+go build ./...
+go vet ./...
+go test ./...
+go test -race ./...
+git diff --check
 ```
 
-Keep `docs/endpoints.generated.txt` as the committed snapshot the job diffs
-against; update it in the same PR that reconciles the code.
+## Migration lessons
 
-> Note: this repo's sandbox must never bind a network port. The CI guard is
-> pull-only (`curl` + `diff`); it does not start a server.
-
----
-
-## History
-
-The first sync after adopting this workflow corrected a batch of upstream
-renames that had accumulated:
-
-| Was (older API)                     | Now (`main`)                                  |
-|-------------------------------------|-----------------------------------------------|
-| `/api/v1/resources`                 | `/api/v1/attachments`                         |
-| `/api/v1/workspace/profile`         | `/api/v1/instance/profile`                    |
-| `/api/v1/workspace/settings/*`      | `/api/v1/instance/settings/*`                 |
-| `/api/v1/auth/status`               | `/api/v1/auth/me`                             |
-| user `accessTokens`                 | user `personalAccessTokens`                   |
-| flat user settings                  | nested `users/*/settings/{key}`               |
-| user stats (ad hoc)                 | custom verbs `users:stats` + `users/*:getStats` |
-| `/api/v1/ai/transcribe`             | `/api/v1/ai:transcribe` (custom verb)         |
-
-New endpoints added in the same pass: memo `shares`/`share`/`unshare`,
-`link-metadata`; attachment `batch-delete`; auth `refresh`; instance `stats`.
+- **Paths:** 26.10.0 and 26.11.1 reject `/api/v1` with HTTP 410. Views replace
+  shortcuts; user identifiers are usernames; all-user stats use `users/-/stats`;
+  instance settings collection GET is replaced by `settings:batchGet`.
+- **Bodies:** the HTTP `body` selector controls whether to send resource fields
+  directly or a request envelope. Reactions need `reaction`, while comments
+  send a Memo directly. Link metadata uses the `url` query field.
+- **Relations:** listing returns incoming/outgoing references and immutable
+  comments. Additive writes preserve only outgoing REFERENCE entries.
+- **Sessions:** these REST gateways expose cookies through
+  `Grpc-Metadata-Set-Cookie` and read them through `Grpc-Metadata-Cookie`.
+  Support those headers alongside standard cookies; validate rotation against
+  real servers. Scope saved credentials to the server and let an explicit PAT
+  take precedence.
+- **Transfers:** chunk RPCs use a spec, upload ID, offset, bounded base64 data,
+  and a finishing call. Verify upload ID and committed size on each response.
+  Downloads/export/SSE stream without buffering the entire response.
+- **Version gates:** `replaceAttachment` exists only in 26.11.1+. Older servers
+  discard unknown fields, so replacement must be gated before starting an
+  upload. `MEMO_RELATED` is removed in 26.11.1.
+- **Cache scope:** cache active non-comment memos; use direct resource commands
+  for archived memos, comments, space/creator metadata, and server filters.
+  Warn when a completed remote write cannot refresh the cache, so callers
+  do not retry a successful write.

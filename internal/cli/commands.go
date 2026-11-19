@@ -5,9 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"mime"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -218,18 +216,7 @@ func cmdCreate(args []string) error {
 	}
 	uploaded := make([]*memos.Attachment, 0, len(attachments))
 	for _, path := range attachments {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("created memo %s but cannot read attachment %q: %w", rm.UIDValue(), path, err)
-		}
-		filename := filepath.Base(path)
-		attachment, err := cl.CreateAttachment(
-			context.Background(),
-			rm.UIDValue(),
-			filename,
-			mime.TypeByExtension(filepath.Ext(filename)),
-			content,
-		)
+		attachment, err := cl.UploadAttachmentFile(context.Background(), path, rm.UIDValue(), "")
 		if err != nil {
 			return fmt.Errorf("created memo %s but cannot upload attachment %q: %w", rm.UIDValue(), path, err)
 		}

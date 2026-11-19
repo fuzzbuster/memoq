@@ -4,22 +4,36 @@ A slim, **non-interactive** command-line client for a personal
 [Memos](https://github.com/usememos/memos) server, built to be driven by a
 **coding agent**. No TUI, no MCP server, no embedded LLM — just a scriptable CLI
 over a local SQLite cache (FTS5 full-text search) with read-time lazy sync, plus
-full coverage of the Memos v1 REST API.
+named commands for all 93 Memos 26.xx REST RPCs.
 
 Every read command supports `--json`; nothing ever prompts for input.
 
 ## Memos compatibility
 
-As of 2026-08-13, the latest stable Memos release is `v0.30.0`.
+Minimum supported Memos version: **26.10.0**. Latest reviewed: **26.11.1**
+(2026-11-19). The upstream switched from `v0.xx` to `26.xx` versioning.
 
 | Memos version | Status in memoq |
 |---|---|
-| `v0.30.0` | Stable compatibility baseline; attachment and object-based relation requests covered by contract tests |
+| `26.10.0` | Minimum compatibility baseline |
+| `26.11.1` | Adds attachment content replacement with `--replace` |
 
-These are deterministic HTTP contract tests using local mock servers, not a
-live Memos end-to-end test matrix. The generic `memoq api` command and raw
-resource commands may work with other Memos v1 releases, but they are not part
-of the stated compatibility baseline.
+REST paths now start with `/api/`; the old `/api/v1/` prefix is rejected by
+these servers. Saved shortcuts are now `view` commands. User resource IDs are
+usernames, such as `user get alice`; use `auth me` for the current user.
+See [the endpoint manifest](docs/ENDPOINTS.md) for all 93 RPC mappings and
+[the changelog](CHANGELOG.md) for migration notes.
+
+Build, vet, unit tests, and race tests passed. Core workflows were verified
+against isolated real servers for both versions, including sessions, spaces,
+relations, attachments, import/export, link metadata, and SSE. Each version
+passed a 1 GiB upload/download with matching SHA-256 after temporarily raising
+its test upload quota. These local checks do not establish performance across
+the public network or other storage backends.
+
+Real AI, SMTP, and external SSO integrations remain unverified without provider
+credentials. Uploads do not automatically resume across CLI invocations or
+server restarts; raw upload-ID requests remain available for explicit continuation.
 
 ## Install
 
@@ -48,6 +62,20 @@ memoq config set auto_sync_ttl_seconds 30   # optional; 0 disables read-time aut
 Data lives under `$MEMOQ_HOME` (default `~/.memoq`). The token is stored `0600`
 and is never echoed back (`config get token` → `***set***`).
 
+Alternatively, leave the configured token empty and sign in:
+
+```bash
+memoq auth signin --body '{"passwordCredentials":{"username":"alice","password":"your-password"}}'
+memoq auth refresh
+memoq auth me
+memoq auth signout
+```
+
+Sign-in persists an access token and refresh cookie in `session.json` with
+`0600` permissions, scoped to the configured server. Refresh rotates them;
+sign-out removes the session. Refresh explicitly when the access token expires.
+A configured personal access token takes precedence over the session token.
+
 ## Usage
 
 memoq has two command tiers. Use the **fast local-cache commands** for everyday
@@ -60,6 +88,10 @@ These serve a local SQLite cache and auto-sync from the server if it is staler
 than `auto_sync_ttl_seconds`. Add `--no-sync` to skip the sync and use the cache
 as-is; add `--json` to parse the output. Flags may appear before, after, or
 between positional args.
+
+The cache contains readable, active, non-comment memos. Use `memo list --query
+state=ARCHIVED` for archived memos, `memo comments` for comments, and resource
+commands for space/creator metadata, placement, and server filters.
 
 ```bash
 # search (full-text, FTS5 with a LIKE substring fallback)
@@ -110,18 +142,20 @@ Notes:
 
 ### Full-API resource commands (direct to server, raw JSON out)
 
-Modeled on lark-cli's `resource-group + verb` structure. These hit the Memos v1
+Modeled on lark-cli's `resource-group + verb` structure. These hit the Memos 26.xx
 REST API directly and print the pretty-printed JSON response, giving complete
 API coverage independent of the local cache.
 
 | Group | Verbs |
 |---|---|
-| `memo` | `list get create update delete comments comment relations relate set-relations reactions react unreact attachments set-attachments shares share unshare link-metadata` |
-| `attachment` | `list get create update delete batch-delete pull` |
-| `user` | `list get create update delete all-stats stats settings setting update-setting tokens create-token delete-token webhooks` |
+| `memo` | `list get create update delete comments comment relations relate set-relations reactions react unreact attachments set-attachments shares share unshare shared link-metadata batch-link-metadata` |
+| `attachment` | `list get create upload update delete batch-delete pull` |
+| `user` | `list batch-get get create update delete all-stats list-stats stats usage settings setting update-setting tokens create-token delete-token webhooks create-webhook update-webhook delete-webhook webhook-secret notifications update-notification delete-notification identities identity link-identity unlink-identity invitations import-memos export-memos` |
 | `auth` | `me signin signout refresh` |
-| `shortcut` | `list get create update delete` |
-| `instance` | `profile setting update-setting stats` |
+| `view` | `list get create update delete` |
+| `space` | `list get create update delete members member update-member remove-member invitations invitation invite revoke-invitation accept-invitation decline-invitation` |
+| `idp` | `list get create update delete` |
+| `instance` | `profile setting batch-settings update-setting test-email stats configuration` |
 | `ai` | `transcribe` |
 | `api` | `<METHOD> <PATH>` — generic escape hatch covering **any** endpoint |
 
@@ -137,9 +171,14 @@ Supply request bodies / query params with:
 | `--yes` | Confirm a destructive operation |
 | `--sync` | Sync the local memo cache after a successful request |
 | `--json` | Accepted for consistency; resource commands always emit JSON |
+| `--output <path>` | Stream a GET response to a file; useful for ZIP exports and blobs |
+| `--stream` | Stream a GET response to stdout; use for `/api/sse` |
 
-`attachment create` additionally accepts `--file <path>`. `memo set-attachments`
+`attachment create` and `attachment upload` accept `--file <path>` and optional
+`--memo <uid>` for bounded chunk uploads. `--replace <attachment-id> --yes`
+replaces content on 26.11.1+ and is rejected on older servers. `memo set-attachments`
 accepts repeatable `--attachment attachments/<id>` values.
+Use `attachment pull --force` after replacing a previously downloaded blob.
 
 ```bash
 # typed resource verbs
@@ -152,25 +191,36 @@ memoq memo relate <uid> <related-uid>
 memoq memo attachments <uid> --json
 memoq memo set-attachments <uid> --attachment attachments/<id>
 memoq attachment create --file ./document.pdf
-memoq user get me
+memoq auth me
+memoq user get alice
+memoq memo react <uid> --body '{"reaction":{"reactionType":"👍"}}'
+memoq view list alice
+memoq space create --field title='Team notes'
+memoq instance batch-settings --body '{"names":["instance/settings/GENERAL"]}'
 memoq instance profile
+memoq user export-memos alice --output ./memos.zip
+memoq user import-memos alice --file ./memos.zip --validate-only
+memoq user import-memos alice --file ./memos.zip --conflict-policy SKIP --yes
+memoq api GET /api/sse --stream
 
 # generic escape hatch — reaches any endpoint, current or future
-memoq api GET  /api/v1/memos --query pageSize=10
-memoq api POST /api/v1/memos --field content='hello' --field visibility=PRIVATE
-memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
+memoq api GET  /api/memos --query pageSize=10
+memoq api POST /api/memos --field content='hello' --field visibility=PRIVATE
+memoq api PATCH /api/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
 ```
 
 Run any group with no verb (e.g. `memoq user`) to print its verb list.
 
 > `memo create`, `memo update`, and `memo delete` sync the local memo cache after
-> success. Other resource commands leave it unchanged. Generic `api` calls only
+> success. `space delete` and completed imports also sync. Other resource commands
+> leave it unchanged unless `--sync` is supplied. Generic `api` calls only
 > sync when `--sync` is supplied. A cache-sync failure after a successful remote
 > write is reported on stderr without converting the completed write into a
 > command failure; run `memoq sync` to repair the stale cache.
 >
-> `memo relate` adds a `REFERENCE` while preserving existing relations. It
-> uses the object-based relation format from the stable Memos `v0.30.0` API.
+> `memo relate` adds an outgoing `REFERENCE` while preserving existing outgoing
+> references. Incoming references and immutable comments are excluded from the
+> replacement request.
 > `memo set-relations` remains available for full replacement.
 
 ### Safe automation
@@ -199,7 +249,7 @@ output goes to stderr, so JSON stdout stays parseable.
 ```bash
 MEMOQ_HTTP_DEBUG=headers memoq memo list --query pageSize=10
 MEMOQ_HTTP_DEBUG=trace memoq sync --json
-MEMOQ_HTTP_DEBUG=dump memoq api GET /api/v1/auth/me
+MEMOQ_HTTP_DEBUG=dump memoq api GET /api/auth/me
 ```
 
 Supported modes: `headers`, `dump`, `trace`, `debug`, `dev`. `dump` / `dev`
@@ -231,9 +281,10 @@ externally-linked attachments are recorded but not downloaded.
 
 `memoq create --attach <path>` uploads a local file and associates it directly
 with the newly created memo; repeat `--attach` for multiple files. Memos receives
-attachment bytes as JSON base64, not multipart upload. Large files remain subject
-to the instance upload limit (32 MiB by default when the server has no configured
-limit). If an attachment upload fails after the memo is created, the command
+attachment bytes as base64 chunks, keeping memory usage bounded. Large files remain
+subject to the server's `USAGE_LIMITS` (32 MiB per file by default) and
+upload-session limits. If an attachment
+upload fails after the memo is created, the command
 reports the created memo UID and does not delete it.
 
 To upload independently, use `memoq attachment create --file <path>`. Associate
@@ -248,7 +299,7 @@ the memo's complete attachment set; clear it explicitly with
 main.go                     entry point → cli.Run
 internal/config/            config + path resolution
 internal/store/             SQLite store, FTS5, migrations, attachment cache
-internal/memos/             Memos v1 API client (generic Do + typed helpers)
+internal/memos/             Memos 26.xx client, sessions, and chunk uploads
 internal/syncer/            incremental sync engine
 internal/cli/               command dispatch, output formatting
 internal/cli/resource.go    lark-cli-style resource-group + verb commands (full API)
@@ -261,7 +312,7 @@ docs/UPSTREAM_SYNC.md       playbook for tracking upstream Memos API changes
 ## Development
 
 ```bash
-go build ./... && go vet ./... && gofmt -l . && go test ./...
+go build ./... && go vet ./... && gofmt -l . && go test ./... && go test -race ./...
 ```
 
 HTTP requests use `github.com/imroc/req/v3`; SQLite uses the pure-Go

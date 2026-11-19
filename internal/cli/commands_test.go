@@ -95,8 +95,8 @@ func TestParseArgs_FlagsAnywhere(t *testing.T) {
 		if err := Run(args); err != nil {
 			t.Fatalf("Run(%v): %v", args, err)
 		}
-		if c.path != "/api/v1/memos/abc?x=1" {
-			t.Errorf("args %v -> path %q, want /api/v1/memos/abc?x=1", args, c.path)
+		if c.path != "/api/memos/abc?x=1" {
+			t.Errorf("args %v -> path %q, want /api/memos/abc?x=1", args, c.path)
 		}
 	}
 }

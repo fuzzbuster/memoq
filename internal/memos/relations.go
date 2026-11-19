@@ -16,22 +16,34 @@ type memoRelationsPage struct {
 
 // AddMemoReference preserves existing relations and adds a REFERENCE relation.
 func (c *Client) AddMemoReference(ctx context.Context, memoUID, relatedMemoUID string) (json.RawMessage, error) {
-	memoName := resourceName("memos", memoUID)
+	sourceName := resourceName("memos", memoUID)
 	relatedMemoName := resourceName("memos", relatedMemoUID)
 
-	relations, err := c.listMemoRelations(ctx, memoUID)
+	listed, err := c.listMemoRelations(ctx, memoUID)
 	if err != nil {
 		return nil, err
 	}
-	for _, relation := range relations {
+	relations := make([]json.RawMessage, 0, len(listed)+1)
+	for _, relation := range listed {
+		var ref struct {
+			Memo json.RawMessage `json:"memo"`
+			Type string          `json:"type"`
+		}
+		if err := json.Unmarshal(relation, &ref); err != nil {
+			return nil, fmt.Errorf("decode memo relation: %w", err)
+		}
+		if ref.Type != "REFERENCE" || memoName(ref.Memo) != sourceName {
+			continue
+		}
 		if isMemoReference(relation, relatedMemoName) {
 			return json.RawMessage(`{}`), nil
 		}
+		relations = append(relations, relation)
 	}
 
-	relations = append(relations, newMemoReference(memoName, relatedMemoName))
+	relations = append(relations, newMemoReference(sourceName, relatedMemoName))
 	return c.Do(ctx, http.MethodPatch, memoRelationsPath(memoUID), map[string]any{
-		"name":      memoName,
+		"name":      sourceName,
 		"relations": relations,
 	})
 }
@@ -39,6 +51,7 @@ func (c *Client) AddMemoReference(ctx context.Context, memoUID, relatedMemoUID s
 func (c *Client) listMemoRelations(ctx context.Context, memoUID string) ([]json.RawMessage, error) {
 	var relations []json.RawMessage
 	pageToken := ""
+	seen := map[string]bool{"": true}
 	for {
 		path := memoRelationsPath(memoUID)
 		if pageToken != "" {
@@ -58,9 +71,10 @@ func (c *Client) listMemoRelations(ctx context.Context, memoUID string) ([]json.
 		if page.NextPageToken == "" {
 			return relations, nil
 		}
-		if page.NextPageToken == pageToken {
+		if seen[page.NextPageToken] {
 			return nil, fmt.Errorf("list memo relations returned repeated page token %q", pageToken)
 		}
+		seen[page.NextPageToken] = true
 		pageToken = page.NextPageToken
 	}
 }
@@ -99,7 +113,7 @@ func newMemoReference(memoName, relatedMemoName string) json.RawMessage {
 }
 
 func memoRelationsPath(memoUID string) string {
-	return "/api/v1/memos/" + url.PathEscape(strings.TrimPrefix(memoUID, "memos/")) + "/relations"
+	return "/api/memos/" + url.PathEscape(strings.TrimPrefix(memoUID, "memos/")) + "/relations"
 }
 
 func resourceName(resource, id string) string {

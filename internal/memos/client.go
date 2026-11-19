@@ -1,7 +1,4 @@
-// Package memos is a Memos v1 REST API client. It targets the Memos API used by
-// the upstream project (github.com/usememos/memos) and aims to cover the full v1
-// surface: memos, attachments, users, auth, shortcuts, instance settings, and AI
-// transcription.
+// Package memos is a Memos REST API client for 26.10.0 and later.
 package memos
 
 import (
@@ -12,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strings"
@@ -29,20 +28,28 @@ const (
 
 // Client talks to a single Memos server.
 type Client struct {
-	baseURL      string
-	token        string
-	http         *req.Client
-	downloadHTTP *req.Client
+	baseURL       string
+	token         string
+	explicitToken bool
+	http          *req.Client
+	downloadHTTP  *req.Client
+	sessionFile   string
+	session       session
 }
 
-// New builds a client. baseURL is the server root (without /api/v1).
+// New builds a client. baseURL is the server root (without /api).
 func New(baseURL, token string) *Client {
-	return &Client{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		token:        token,
-		http:         newHTTPClient(false),
-		downloadHTTP: newHTTPClient(true),
+	jar, _ := cookiejar.New(nil)
+	c := &Client{
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		token:         token,
+		explicitToken: token != "",
+		http:          newHTTPClient(false),
+		downloadHTTP:  newHTTPClient(true).SetTimeout(0),
 	}
+	c.http.SetCookieJar(jar)
+	c.downloadHTTP.SetCookieJar(jar)
+	return c
 }
 
 func newHTTPClient(skipResponseBodyDump bool) *req.Client {
@@ -88,7 +95,7 @@ func configureHTTPDebug(c *req.Client, skipResponseBodyDump bool) {
 }
 
 // Do performs an arbitrary authenticated request against a path under the server
-// root (e.g. "/api/v1/memos") and returns the raw JSON response body. body may
+// root (e.g. "/api/memos") and returns the raw JSON response body. body may
 // be nil (no request body), a []byte / json.RawMessage (sent verbatim), or any
 // value that will be JSON-marshalled. This is the generic primitive the CLI
 // resource commands are built on, guaranteeing full API coverage.
@@ -134,6 +141,17 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if c.token != "" {
 		req.SetBearerAuthToken(c.token)
 	}
+	if strings.HasPrefix(path, "/api/auth/") {
+		if u, err := url.Parse(c.baseURL + path); err == nil {
+			var cookies []string
+			for _, cookie := range c.http.GetClient().Jar.Cookies(u) {
+				cookies = append(cookies, cookie.String())
+			}
+			if len(cookies) > 0 {
+				req.SetHeader("Grpc-Metadata-Cookie", strings.Join(cookies, "; "))
+			}
+		}
+	}
 
 	resp, err := req.Send(method, c.baseURL+path)
 	if err != nil {
@@ -145,6 +163,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return fmt.Errorf("memos API %s %s -> %d: %s",
 			method, path, resp.GetStatusCode(), strings.TrimSpace(string(data)))
 	}
+	cookies := resp.Cookies()
+	// The 26.xx REST gateway also exposes Set-Cookie as gRPC metadata.
+	cookieResponse := http.Response{Header: http.Header{"Set-Cookie": resp.Header.Values("Grpc-Metadata-Set-Cookie")}}
+	cookies = append(cookies, cookieResponse.Cookies()...)
+	c.updateSession(method, path, data, cookies)
 	switch sink := out.(type) {
 	case nil:
 		return nil
@@ -263,7 +286,7 @@ func (m *Memo) CacheMD5() string {
 // commands are built on. Everything else in the CLI goes through the generic
 // Do() primitive, but the hot sync path benefits from typed structs.
 
-// listMemosResponse is the paginated envelope returned by GET /api/v1/memos.
+// listMemosResponse is the paginated envelope returned by GET /api/memos.
 type listMemosResponse struct {
 	Memos         *[]*Memo `json:"memos"`
 	NextPageToken string   `json:"nextPageToken"`
@@ -281,9 +304,10 @@ func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 		if pageSize > 0 {
 			ps = fmt.Sprintf("%d", pageSize)
 		}
-		path := "/api/v1/memos" + query(
+		path := "/api/memos" + query(
 			[2]string{"pageSize", ps},
 			[2]string{"pageToken", pageToken},
+			[2]string{"state", "NORMAL"},
 		)
 		var resp listMemosResponse
 		if err := c.do(ctx, methodGet, path, nil, &resp); err != nil {
@@ -313,7 +337,7 @@ func (c *Client) ListAll(ctx context.Context, pageSize int) ([]*Memo, error) {
 // Get fetches a single memo by UID.
 func (c *Client) Get(ctx context.Context, uid string) (*Memo, error) {
 	var m Memo
-	if err := c.do(ctx, methodGet, "/api/v1/memos/"+url.PathEscape(uid), nil, &m); err != nil {
+	if err := c.do(ctx, methodGet, "/api/memos/"+url.PathEscape(strings.TrimPrefix(uid, "memos/")), nil, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -327,7 +351,7 @@ func (c *Client) Create(ctx context.Context, content, visibility string) (*Memo,
 	}
 	reqBody := map[string]any{"content": content, "visibility": visibility}
 	var m Memo
-	if err := c.do(ctx, methodPost, "/api/v1/memos", reqBody, &m); err != nil {
+	if err := c.do(ctx, methodPost, "/api/memos", reqBody, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -346,7 +370,7 @@ func (c *Client) Update(ctx context.Context, uid, content, visibility string) (*
 		patch["visibility"] = visibility
 		mask = append(mask, "visibility")
 	}
-	path := "/api/v1/memos/" + url.PathEscape(uid) + query(
+	path := "/api/memos/" + url.PathEscape(strings.TrimPrefix(uid, "memos/")) + query(
 		[2]string{"updateMask", strings.Join(mask, ",")},
 	)
 	var m Memo
@@ -358,14 +382,14 @@ func (c *Client) Update(ctx context.Context, uid, content, visibility string) (*
 
 // Delete removes a memo by UID.
 func (c *Client) Delete(ctx context.Context, uid string) error {
-	return c.do(ctx, methodDelete, "/api/v1/memos/"+url.PathEscape(uid), nil, nil)
+	return c.do(ctx, methodDelete, "/api/memos/"+url.PathEscape(strings.TrimPrefix(uid, "memos/")), nil, nil)
 }
 
 // Ping verifies connectivity and auth by fetching the authenticated user. It
 // returns a descriptive error if the server is unreachable or the token is
 // rejected.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.do(ctx, methodGet, "/api/v1/auth/me", nil, nil)
+	return c.do(ctx, methodGet, "/api/auth/me", nil, nil)
 }
 
 // --- attachments ------------------------------------------------------------
@@ -389,7 +413,7 @@ func (c *Client) CreateAttachment(ctx context.Context, memoUID, filename, mimeTy
 		reqBody["type"] = mimeType
 	}
 	var attachment Attachment
-	if err := c.do(ctx, methodPost, "/api/v1/attachments", reqBody, &attachment); err != nil {
+	if err := c.do(ctx, methodPost, "/api/attachments", reqBody, &attachment); err != nil {
 		return nil, err
 	}
 	return &attachment, nil
@@ -428,10 +452,10 @@ type listAttachmentsResponse struct {
 }
 
 // ListMemoAttachments fetches the attachments belonging to one memo via
-// GET /api/v1/memos/{uid}/attachments.
+// GET /api/memos/{uid}/attachments.
 func (c *Client) ListMemoAttachments(ctx context.Context, memoUID string) ([]*Attachment, error) {
 	var resp listAttachmentsResponse
-	path := "/api/v1/memos/" + url.PathEscape(memoUID) + "/attachments"
+	path := "/api/memos/" + url.PathEscape(strings.TrimPrefix(memoUID, "memos/")) + "/attachments"
 	if err := c.do(ctx, methodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
@@ -450,10 +474,27 @@ func (c *Client) DownloadFile(ctx context.Context, name, filename string, w io.W
 		segs[i] = url.PathEscape(s)
 	}
 	path := "/file/" + strings.Join(segs, "/") + "/" + url.PathEscape(filename)
+	return c.Download(ctx, path, w)
+}
 
+// Download streams a server-relative GET response without buffering its body.
+func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64, error) {
+	return c.download(ctx, path, w, false)
+}
+
+// Stream copies an event stream until the context is cancelled.
+func (c *Client) Stream(ctx context.Context, path string, w io.Writer) error {
+	_, err := c.download(ctx, path, w, true)
+	return err
+}
+
+func (c *Client) download(ctx context.Context, path string, w io.Writer, stream bool) (int64, error) {
 	req := c.downloadHTTP.R().
 		SetContext(ctx).
 		DisableAutoReadResponse()
+	if stream {
+		req.SetHeader("Accept", "text/event-stream")
+	}
 	if c.token != "" {
 		req.SetBearerAuthToken(c.token)
 	}

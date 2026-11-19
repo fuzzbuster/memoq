@@ -71,7 +71,7 @@ func legacyCommand(use, short string, run func([]string) error) *cobra.Command {
 func resourceCommand(spec resourceGroupSpec) *cobra.Command {
 	long := fmt.Sprintf("%s\n\nVerbs: %s", spec.Short, strings.Join(resourceVerbs(spec.Name), " "))
 	if spec.Name != "api" {
-		long += "\n\nFlags: --body, --body-file, --field, --query, --dry-run, --yes, --sync"
+		long += "\n\nFlags: --body, --body-file, --field, --query, --dry-run, --yes, --sync, --output, --stream"
 	}
 	return &cobra.Command{
 		Use:                spec.Use,
@@ -98,13 +98,13 @@ Fast local-cache commands:
   search, list, get, create, update, delete, stats, sync, config
 
 Full-API resource commands:
-  memo, attachment, user, auth, shortcut, instance, ai, api
+  memo, attachment, user, auth, view, space, idp, instance, ai, api
 
 Resource commands follow the lark-cli-style shape:
   memoq <resource> <verb> [positional] [flags]
 
 Shared resource flags:
-  --body, --body-file, --field, --query, --dry-run, --yes, --sync
+  --body, --body-file, --field, --query, --dry-run, --yes, --sync, --output, --stream
 
 Data lives under $MEMOQ_HOME (default ~/.memoq).`
 }
@@ -145,10 +145,14 @@ func (a *app) close() {
 
 // client builds an authenticated Memos client, validating config first.
 func (a *app) client() (*memos.Client, error) {
-	if err := a.cfg.Validate(); err != nil {
+	if a.cfg.ServerURL == "" {
+		return nil, fmt.Errorf("server_url is not set (run: memoq config set server_url <url>)")
+	}
+	cl := memos.New(a.cfg.ServerURL, a.cfg.Token)
+	if err := cl.UseSessionFile(a.paths.SessionFile); err != nil {
 		return nil, err
 	}
-	return memos.New(a.cfg.ServerURL, a.cfg.Token), nil
+	return cl, nil
 }
 
 // autoSync runs a read-time lazy sync unless disabled by the flag or config.
@@ -158,10 +162,14 @@ func (a *app) autoSync(noSync bool) {
 	if noSync || a.cfg.AutoSyncTTLSeconds <= 0 {
 		return
 	}
-	if err := a.cfg.Validate(); err != nil {
-		return // not configured yet; nothing to sync
+	if a.cfg.ServerURL == "" {
+		return
 	}
-	cl := memos.New(a.cfg.ServerURL, a.cfg.Token)
+	cl, err := a.client()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "memoq: auto-sync skipped ("+err.Error()+"); using local cache")
+		return
+	}
 	sy := syncer.New(cl, a.store)
 	if _, err := sy.MaybeAutoSync(context.Background(), a.cfg.AutoSyncTTLSeconds); err != nil {
 		fmt.Fprintln(os.Stderr, "memoq: auto-sync skipped ("+err.Error()+"); using local cache")

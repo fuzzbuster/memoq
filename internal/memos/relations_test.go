@@ -3,6 +3,7 @@ package memos
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,9 +15,9 @@ func TestAddMemoReference_PreservesExistingRelations(t *testing.T) {
 	var patchBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/memos/source/relations"):
-			_, _ = w.Write([]byte(`{"relations":[{"memo":{"name":"memos/source"},"relatedMemo":{"name":"memos/existing"},"type":"REFERENCE"}]}`))
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/memos/source/relations":
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/memos/source/relations"):
+			_, _ = w.Write([]byte(`{"relations":[{"memo":{"name":"memos/source"},"relatedMemo":{"name":"memos/existing"},"type":"REFERENCE"},{"memo":{"name":"memos/incoming"},"relatedMemo":{"name":"memos/source"},"type":"REFERENCE"},{"memo":{"name":"memos/comment"},"relatedMemo":{"name":"memos/source"},"type":"COMMENT"}]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/memos/source/relations":
 			patchBody, _ = io.ReadAll(r.Body)
 			_, _ = w.Write([]byte(`{}`))
 		default:
@@ -55,9 +56,9 @@ func TestAddMemoReference_UsesObjectFormatAndAcceptsEmptySuccess(t *testing.T) {
 	var patchBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/memos/source/relations"):
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/memos/source/relations"):
 			_, _ = w.Write([]byte(`{"relations":[]}`))
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/memos/source/relations":
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/memos/source/relations":
 			patchBody, _ = io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -96,13 +97,13 @@ func TestAddMemoReference_UsesObjectFormatAndAcceptsEmptySuccess(t *testing.T) {
 	}
 }
 
-func TestAddMemoReference_UsesStableV030ObjectFormat(t *testing.T) {
+func TestAddMemoReference_Uses26ObjectFormat(t *testing.T) {
 	var patchBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/memos/source/relations":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/memos/source/relations":
 			_, _ = w.Write([]byte(`{"relations":[]}`))
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/memos/source/relations":
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/memos/source/relations":
 			patchBody, _ = io.ReadAll(r.Body)
 			_, _ = w.Write([]byte(`{}`))
 		default:
@@ -133,7 +134,7 @@ func TestAddMemoReference_UsesStableV030ObjectFormat(t *testing.T) {
 		request.Relations[0].Memo.Name != "memos/source" ||
 		request.Relations[0].RelatedMemo.Name != "memos/target" ||
 		request.Relations[0].Type != "REFERENCE" {
-		t.Errorf("unexpected v0.30 relation: %s", patchBody)
+		t.Errorf("unexpected 26.xx relation: %s", patchBody)
 	}
 }
 
@@ -141,11 +142,11 @@ func TestAddMemoReference_PreservesPaginatedObjectRelations(t *testing.T) {
 	var patchBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/memos/source/relations" && r.URL.Query().Get("pageToken") == "":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/memos/source/relations" && r.URL.Query().Get("pageToken") == "":
 			_, _ = w.Write([]byte(`{"relations":[{"memo":{"name":"memos/source"},"relatedMemo":{"name":"memos/first"},"type":"REFERENCE"}],"nextPageToken":"next"}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/memos/source/relations" && r.URL.Query().Get("pageToken") == "next":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/memos/source/relations" && r.URL.Query().Get("pageToken") == "next":
 			_, _ = w.Write([]byte(`{"relations":[{"memo":{"name":"memos/source"},"relatedMemo":{"name":"memos/second"},"type":"REFERENCE"}]}`))
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/memos/source/relations":
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/memos/source/relations":
 			patchBody, _ = io.ReadAll(r.Body)
 			_, _ = w.Write([]byte(`{}`))
 		default:
@@ -200,5 +201,19 @@ func TestAddMemoReference_DoesNotDuplicateExistingReference(t *testing.T) {
 	}
 	if patchCalls != 0 || string(raw) != `{}` {
 		t.Errorf("patch calls = %d, response = %s", patchCalls, raw)
+	}
+}
+
+func TestAddMemoReference_RejectsPaginationCycle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Error("pagination error must not write relations")
+		}
+		fmt.Fprint(w, `{"relations":[],"nextPageToken":"repeat"}`)
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL, "").AddMemoReference(context.Background(), "source", "target")
+	if err == nil || !strings.Contains(err.Error(), "repeated page token") {
+		t.Fatalf("pagination cycle: %v", err)
 	}
 }

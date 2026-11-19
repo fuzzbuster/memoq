@@ -5,10 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// captured records the arguments the stubbed runAPI received.
 type captured struct {
 	method    string
 	path      string
@@ -16,8 +16,6 @@ type captured struct {
 	syncCache bool
 }
 
-// stubRunAPI replaces the package-level runAPI for the duration of a test,
-// capturing the constructed request instead of performing it.
 func stubRunAPI(t *testing.T) *captured {
 	t.Helper()
 	c := &captured{}
@@ -30,403 +28,288 @@ func stubRunAPI(t *testing.T) *captured {
 	return c
 }
 
-// TestResourcePaths asserts the exact method+path each resource verb builds.
-// These are the regression guards for the upstream-drift corrections: attachments
-// (not resources), instance (not workspace), auth/me (not auth/status),
-// personalAccessTokens, custom verbs with ':' etc.
+// Independent HTTP binding snapshot from all eight upstream service protos.
+// Both 26.10.0 and 26.11.1 have these 93 bindings; x/y replace path wildcards.
+const upstream26Endpoints = `
+DELETE /api/attachments/x
+DELETE /api/identity-providers/x
+DELETE /api/memos/x
+DELETE /api/memos/x/reactions/y
+DELETE /api/memos/x/shares/y
+DELETE /api/spaces/x
+DELETE /api/spaces/x/invitations/y
+DELETE /api/spaces/x/members/y
+DELETE /api/users/x
+DELETE /api/users/x/linkedIdentities/y
+DELETE /api/users/x/notifications/y
+DELETE /api/users/x/personalAccessTokens/y
+DELETE /api/users/x/views/y
+DELETE /api/users/x/webhooks/y
+GET /api/attachments
+GET /api/attachments/x
+GET /api/auth/me
+GET /api/identity-providers
+GET /api/identity-providers/x
+GET /api/instance/configuration
+GET /api/instance/profile
+GET /api/instance/settings/x
+GET /api/instance/stats
+GET /api/memos
+GET /api/memos/-/linkMetadata
+GET /api/memos/x
+GET /api/memos/x/attachments
+GET /api/memos/x/comments
+GET /api/memos/x/reactions
+GET /api/memos/x/relations
+GET /api/memos/x/shares
+GET /api/shares/x/memo
+GET /api/spaces
+GET /api/spaces/x
+GET /api/spaces/x/invitations
+GET /api/spaces/x/invitations/y
+GET /api/spaces/x/members
+GET /api/spaces/x/members/y
+GET /api/users
+GET /api/users/x
+GET /api/users/x/linkedIdentities
+GET /api/users/x/linkedIdentities/y
+GET /api/users/x/notifications
+GET /api/users/x/personalAccessTokens
+GET /api/users/x/settings
+GET /api/users/x/settings/y
+GET /api/users/x/spaceInvitations
+GET /api/users/x/stats
+GET /api/users/x/usage
+GET /api/users/x/views
+GET /api/users/x/views/y
+GET /api/users/x/webhooks
+GET /api/users/x/webhooks/y:getSigningSecret
+GET /api/users/x:getStats
+PATCH /api/attachments/x
+PATCH /api/identity-providers/x
+PATCH /api/instance/settings/x
+PATCH /api/memos/x
+PATCH /api/memos/x/attachments
+PATCH /api/memos/x/relations
+PATCH /api/spaces/x
+PATCH /api/spaces/x/members/y
+PATCH /api/users/x
+PATCH /api/users/x/notifications/y
+PATCH /api/users/x/settings/y
+PATCH /api/users/x/views/y
+PATCH /api/users/x/webhooks/y
+POST /api/ai:transcribe
+POST /api/attachments
+POST /api/attachments:batchDelete
+POST /api/attachments:upload
+POST /api/auth/refresh
+POST /api/auth/signin
+POST /api/auth/signout
+POST /api/identity-providers
+POST /api/instance/settings/notification:testEmail
+POST /api/instance/settings:batchGet
+POST /api/memos
+POST /api/memos/-/linkMetadata:batchGet
+POST /api/memos/x/comments
+POST /api/memos/x/reactions
+POST /api/memos/x/shares
+POST /api/spaces
+POST /api/spaces/x/invitations
+POST /api/spaces/x/invitations/y:accept
+POST /api/spaces/x/invitations/y:decline
+POST /api/users
+POST /api/users/x/linkedIdentities
+POST /api/users/x/personalAccessTokens
+POST /api/users/x/views
+POST /api/users/x/webhooks
+POST /api/users/x:importMemos
+POST /api/users:batchGet
+`
+
 func TestResourcePaths(t *testing.T) {
-	cases := []struct {
-		name       string
-		args       []string // full argv after the program name
-		wantMethod string
-		wantPath   string
-	}{
-		// memo
-		{"memo list", []string{"memo", "list"}, "GET", "/api/v1/memos"},
-		{"memo list query", []string{"memo", "list", "--query", "pageSize=10"}, "GET", "/api/v1/memos?pageSize=10"},
-		{"memo get", []string{"memo", "get", "abc"}, "GET", "/api/v1/memos/abc"},
-		{"memo create", []string{"memo", "create", "--field", "content=hi"}, "POST", "/api/v1/memos"},
-		{"memo update", []string{"memo", "update", "abc", "--field", "pinned=true", "--query", "updateMask=pinned"}, "PATCH", "/api/v1/memos/abc?updateMask=pinned"},
-		{"memo delete", []string{"memo", "delete", "abc", "--yes"}, "DELETE", "/api/v1/memos/abc"},
-		{"memo comments", []string{"memo", "comments", "abc"}, "GET", "/api/v1/memos/abc/comments"},
-		{"memo comment", []string{"memo", "comment", "abc", "--field", "content=hey"}, "POST", "/api/v1/memos/abc/comments"},
-		{"memo relations", []string{"memo", "relations", "abc"}, "GET", "/api/v1/memos/abc/relations"},
-		{"memo set-relations", []string{"memo", "set-relations", "abc", "--body", "{}"}, "PATCH", "/api/v1/memos/abc/relations"},
-		{"memo reactions", []string{"memo", "reactions", "abc"}, "GET", "/api/v1/memos/abc/reactions"},
-		{"memo react", []string{"memo", "react", "abc", "--field", "reactionType=THUMBS_UP"}, "POST", "/api/v1/memos/abc/reactions"},
-		{"memo unreact", []string{"memo", "unreact", "abc", "r1", "--yes"}, "DELETE", "/api/v1/memos/abc/reactions/r1"},
-		{"memo attachments json", []string{"memo", "attachments", "abc", "--json"}, "GET", "/api/v1/memos/abc/attachments"},
-		{"memo set-attachments", []string{"memo", "set-attachments", "abc", "--body", "{}"}, "PATCH", "/api/v1/memos/abc/attachments"},
-		{"memo shares", []string{"memo", "shares", "abc"}, "GET", "/api/v1/memos/abc/shares"},
-		{"memo share", []string{"memo", "share", "abc", "--body", "{}", "--yes"}, "POST", "/api/v1/memos/abc/shares"},
-		{"memo unshare", []string{"memo", "unshare", "abc", "s1", "--yes"}, "DELETE", "/api/v1/memos/abc/shares/s1"},
-		{"memo link-metadata", []string{"memo", "link-metadata", "--query", "link=http://x"}, "GET", "/api/v1/memos/-/linkMetadata?link=http%3A%2F%2Fx"},
-
-		// attachment
-		{"attachment list", []string{"attachment", "list"}, "GET", "/api/v1/attachments"},
-		{"attachment get", []string{"attachment", "get", "id1"}, "GET", "/api/v1/attachments/id1"},
-		{"attachment create", []string{"attachment", "create", "--body", "{}"}, "POST", "/api/v1/attachments"},
-		{"attachment update", []string{"attachment", "update", "id1", "--body", "{}"}, "PATCH", "/api/v1/attachments/id1"},
-		{"attachment delete", []string{"attachment", "delete", "id1", "--yes"}, "DELETE", "/api/v1/attachments/id1"},
-		{"attachment batch-delete", []string{"attachment", "batch-delete", "--body", "{}", "--yes"}, "POST", "/api/v1/attachments:batchDelete"},
-
-		// user
-		{"user list", []string{"user", "list"}, "GET", "/api/v1/users"},
-		{"user get", []string{"user", "get", "me"}, "GET", "/api/v1/users/me"},
-		{"user create", []string{"user", "create", "--body", "{}"}, "POST", "/api/v1/users"},
-		{"user update", []string{"user", "update", "1", "--body", "{}"}, "PATCH", "/api/v1/users/1"},
-		{"user delete", []string{"user", "delete", "1", "--yes"}, "DELETE", "/api/v1/users/1"},
-		{"user all-stats", []string{"user", "all-stats"}, "GET", "/api/v1/users:stats"},
-		{"user stats", []string{"user", "stats", "1"}, "GET", "/api/v1/users/1:getStats"},
-		{"user settings", []string{"user", "settings", "1"}, "GET", "/api/v1/users/1/settings"},
-		{"user setting", []string{"user", "setting", "1", "GENERAL"}, "GET", "/api/v1/users/1/settings/GENERAL"},
-		{"user update-setting", []string{"user", "update-setting", "1", "GENERAL", "--body", "{}", "--yes"}, "PATCH", "/api/v1/users/1/settings/GENERAL"},
-		{"user tokens", []string{"user", "tokens", "1"}, "GET", "/api/v1/users/1/personalAccessTokens"},
-		{"user create-token", []string{"user", "create-token", "1", "--body", "{}"}, "POST", "/api/v1/users/1/personalAccessTokens"},
-		{"user delete-token", []string{"user", "delete-token", "1", "tok9", "--yes"}, "DELETE", "/api/v1/users/1/personalAccessTokens/tok9"},
-		{"user webhooks", []string{"user", "webhooks", "1"}, "GET", "/api/v1/users/1/webhooks"},
-
-		// auth (drift-corrected)
-		{"auth me", []string{"auth", "me"}, "GET", "/api/v1/auth/me"},
-		{"auth status alias", []string{"auth", "status"}, "GET", "/api/v1/auth/me"},
-		{"auth signin", []string{"auth", "signin", "--body", "{}"}, "POST", "/api/v1/auth/signin"},
-		{"auth signout", []string{"auth", "signout"}, "POST", "/api/v1/auth/signout"},
-		{"auth refresh", []string{"auth", "refresh", "--body", "{}"}, "POST", "/api/v1/auth/refresh"},
-
-		// shortcut
-		{"shortcut list", []string{"shortcut", "list", "1"}, "GET", "/api/v1/users/1/shortcuts"},
-		{"shortcut get", []string{"shortcut", "get", "1", "s2"}, "GET", "/api/v1/users/1/shortcuts/s2"},
-		{"shortcut create", []string{"shortcut", "create", "1", "--body", "{}"}, "POST", "/api/v1/users/1/shortcuts"},
-		{"shortcut update", []string{"shortcut", "update", "1", "s2", "--body", "{}"}, "PATCH", "/api/v1/users/1/shortcuts/s2"},
-		{"shortcut delete", []string{"shortcut", "delete", "1", "s2", "--yes"}, "DELETE", "/api/v1/users/1/shortcuts/s2"},
-
-		// instance (drift-corrected)
-		{"instance profile", []string{"instance", "profile"}, "GET", "/api/v1/instance/profile"},
-		{"instance setting collection", []string{"instance", "setting"}, "GET", "/api/v1/instance/settings"},
-		{"instance setting key", []string{"instance", "setting", "GENERAL"}, "GET", "/api/v1/instance/settings/GENERAL"},
-		{"instance update-setting", []string{"instance", "update-setting", "GENERAL", "--body", "{}", "--yes"}, "PATCH", "/api/v1/instance/settings/GENERAL"},
-		{"instance stats", []string{"instance", "stats"}, "GET", "/api/v1/instance/stats"},
-
-		// ai (custom verb)
-		{"ai transcribe", []string{"ai", "transcribe", "--body", "{}"}, "POST", "/api/v1/ai:transcribe"},
-
-		// generic escape hatch
-		{"api get", []string{"api", "GET", "/api/v1/memos", "--query", "pageSize=5"}, "GET", "/api/v1/memos?pageSize=5"},
-		{"api post lowercase method", []string{"api", "post", "/api/v1/memos", "--field", "content=x"}, "POST", "/api/v1/memos"},
-		{"api path missing slash", []string{"api", "GET", "api/v1/memos"}, "GET", "/api/v1/memos"},
+	want := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(upstream26Endpoints), "\n") {
+		want[line] = true
 	}
+	if len(want) != 93 {
+		t.Fatalf("upstream snapshot has %d bindings, want 93", len(want))
+	}
+	for resource, specs := range resourceVerbSpecs {
+		for _, spec := range specs {
+			if spec.Handler != nil || spec.Names[0] == "export-memos" || spec.Names[0] == "all-stats" {
+				continue
+			}
+			pos := []string{}
+			if spec.Args == argsOne || spec.Args == argsTwo {
+				pos = append(pos, "x")
+			}
+			if spec.Args == argsTwo {
+				pos = append(pos, "y")
+			}
+			key := spec.Method + " " + spec.Path(pos)
+			if !want[key] {
+				t.Errorf("unexpected binding %s (%s %s)", key, resource, spec.Names[0])
+			}
+			delete(want, key)
+			t.Run(resource+" "+spec.Names[0], func(t *testing.T) {
+				c := stubRunAPI(t)
+				args := append([]string{resource, spec.Names[0]}, pos...)
+				args = append(args, "--yes")
+				if err := Run(args); err != nil {
+					t.Fatal(err)
+				}
+				if got := c.method + " " + c.path; got != key {
+					t.Fatalf("request = %s, want %s", got, key)
+				}
+			})
+		}
+	}
+	for key := range want {
+		t.Errorf("missing upstream binding: %s", key)
+	}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c := stubRunAPI(t)
-			if err := Run(tc.args); err != nil {
-				t.Fatalf("Run(%v): %v", tc.args, err)
-			}
-			if c.method != tc.wantMethod {
-				t.Errorf("method = %q, want %q", c.method, tc.wantMethod)
-			}
-			if c.path != tc.wantPath {
-				t.Errorf("path = %q, want %q", c.path, tc.wantPath)
-			}
-		})
+func TestResourceQueriesAndAliases(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		path string
+	}{
+		{[]string{"memo", "list", "--query", "pageSize=10"}, "/api/memos?pageSize=10"},
+		{[]string{"memo", "link-metadata", "--query", "url=http://x"}, "/api/memos/-/linkMetadata?url=http%3A%2F%2Fx"},
+		{[]string{"auth", "status"}, "/api/auth/me"},
+		{[]string{"user", "all-stats"}, "/api/users/-/stats"},
+		{[]string{"api", "get", "api/memos", "--query", "pageSize=5"}, "/api/memos?pageSize=5"},
+	} {
+		c := stubRunAPI(t)
+		if err := Run(tc.args); err != nil {
+			t.Fatal(err)
+		}
+		if c.method != "GET" || c.path != tc.path {
+			t.Fatalf("request = %s %s, want GET %s", c.method, c.path, tc.path)
+		}
 	}
 }
 
 func TestBodyBuilding_FieldCoercion(t *testing.T) {
 	c := stubRunAPI(t)
-	if err := Run([]string{"memo", "create",
-		"--field", "content=hello world",
-		"--field", "pinned=true",
-		"--field", "priority=3",
-	}); err != nil {
+	if err := Run([]string{"memo", "create", "--field", "content=hello world", "--field", "pinned=true", "--field", "priority=3"}); err != nil {
 		t.Fatal(err)
 	}
-	obj, ok := c.body.(map[string]any)
-	if !ok {
-		t.Fatalf("body type = %T, want map", c.body)
-	}
-	if obj["content"] != "hello world" {
-		t.Errorf("content = %v (want string)", obj["content"])
-	}
-	if obj["pinned"] != true {
-		t.Errorf("pinned = %v (want bool true)", obj["pinned"])
-	}
-	// JSON numbers decode to float64
-	if obj["priority"] != float64(3) {
-		t.Errorf("priority = %v (want number 3)", obj["priority"])
+	obj := c.body.(map[string]any)
+	if obj["content"] != "hello world" || obj["pinned"] != true || obj["priority"] != float64(3) {
+		t.Fatalf("body = %#v", obj)
 	}
 }
 
 func TestBodyBuilding_RawBodyWinsOverFields(t *testing.T) {
 	c := stubRunAPI(t)
-	if err := Run([]string{"memo", "create",
-		"--body", `{"content":"raw"}`,
-		"--field", "content=ignored",
-	}); err != nil {
+	if err := Run([]string{"memo", "create", "--body", `{"content":"raw"}`, "--field", "content=ignored"}); err != nil {
 		t.Fatal(err)
 	}
-	raw, ok := c.body.(json.RawMessage)
-	if !ok {
-		t.Fatalf("body type = %T, want json.RawMessage", c.body)
-	}
-	if string(raw) != `{"content":"raw"}` {
-		t.Errorf("raw body = %s", raw)
+	if string(c.body.(json.RawMessage)) != `{"content":"raw"}` {
+		t.Fatalf("body = %s", c.body)
 	}
 }
 
-func TestAttachmentCreateFileBuildsBase64Body(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sample.png")
-	if err := os.WriteFile(path, []byte{1, 2, 3}, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	c := stubRunAPI(t)
-	if err := Run([]string{"attachment", "create", "--file", path}); err != nil {
-		t.Fatal(err)
-	}
-	if c.method != "POST" || c.path != "/api/v1/attachments" {
-		t.Fatalf("request = %s %s, want POST /api/v1/attachments", c.method, c.path)
-	}
-	encoded, err := json.Marshal(c.body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var body map[string]string
-	if err := json.Unmarshal(encoded, &body); err != nil {
-		t.Fatal(err)
-	}
-	if body["filename"] != "sample.png" || body["type"] != "image/png" || body["content"] != "AQID" {
-		t.Fatalf("body = %s", encoded)
-	}
-}
-
-func TestAttachmentCreateFileRejectsExplicitBody(t *testing.T) {
+func TestAttachmentFileValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sample.bin")
 	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	stubRunAPI(t)
-	err := Run([]string{"attachment", "create", "--file", path, "--body", `{}`})
-	if err == nil {
-		t.Fatal("--file with --body should fail")
-	}
-}
-
-func TestAttachmentCreateFileUsesDefaultMIMEType(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sample.unknown-extension")
-	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	c := stubRunAPI(t)
-	if err := Run([]string{"attachment", "create", "--file", path}); err != nil {
-		t.Fatal(err)
-	}
-	body, ok := c.body.(map[string]any)
-	if !ok {
-		t.Fatalf("body type = %T, want map", c.body)
-	}
-	if body["type"] != "application/octet-stream" {
-		t.Fatalf("type = %q, want application/octet-stream", body["type"])
-	}
-}
-
-func TestAttachmentCreateFileReadErrorDoesNotCallAPI(t *testing.T) {
-	c := stubRunAPI(t)
-	err := Run([]string{"attachment", "create", "--file", filepath.Join(t.TempDir(), "missing.bin")})
-	if err == nil {
-		t.Fatal("missing upload file should fail")
-	}
-	if c.method != "" {
-		t.Fatalf("file read error called API with method %q", c.method)
+	for _, args := range [][]string{
+		{"attachment", "create", "--file", path, "--body", `{}`},
+		{"attachment", "upload", "--file", path, "--memo", "m", "--replace", "a", "--yes"},
+		{"attachment", "create", "--file", path + ".missing"},
+		{"attachment", "upload", "--replace", "a", "--yes"},
+		{"user", "import-memos", "x", "--file", path, "--conflict-policy", "BAD", "--yes"},
+	} {
+		c := stubRunAPI(t)
+		if err := Run(args); err == nil {
+			t.Fatalf("expected validation error for %v", args)
+		}
+		if c.method != "" {
+			t.Fatal("invalid input called API")
+		}
 	}
 }
 
 func TestMemoSetAttachmentsBuildsEnvelope(t *testing.T) {
 	c := stubRunAPI(t)
-	if err := Run([]string{
-		"memo", "set-attachments", "memo1",
-		"--attachment", "attachments/a",
-		"--attachment", "attachments/b",
-	}); err != nil {
+	if err := Run([]string{"memo", "set-attachments", "memo1", "--attachment", "attachments/a", "--attachment", "attachments/b"}); err != nil {
 		t.Fatal(err)
 	}
-	if c.method != "PATCH" || c.path != "/api/v1/memos/memo1/attachments" {
-		t.Fatalf("request = %s %s", c.method, c.path)
+	encoded, _ := json.Marshal(c.body)
+	if c.path != "/api/memos/memo1/attachments" || string(encoded) != `{"attachments":[{"name":"attachments/a"},{"name":"attachments/b"}]}` {
+		t.Fatalf("request = %s %s", c.path, encoded)
 	}
-	encoded, err := json.Marshal(c.body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(encoded) != `{"attachments":[{"name":"attachments/a"},{"name":"attachments/b"}]}` {
-		t.Fatalf("body = %s", encoded)
-	}
-}
-
-func TestMemoSetAttachmentsRejectsExplicitBody(t *testing.T) {
-	c := stubRunAPI(t)
-	err := Run([]string{
-		"memo", "set-attachments", "memo1",
-		"--attachment", "attachments/a",
-		"--field", "attachments=[]",
-	})
-	if err == nil {
-		t.Fatal("--attachment with --field should fail")
-	}
-	if c.method != "" {
-		t.Fatalf("conflicting body inputs called API with method %q", c.method)
+	for _, args := range [][]string{
+		{"memo", "set-attachments", "memo1", "--attachment", "a"},
+		{"memo", "set-attachments", "memo1", "--attachment", "attachments/a", "--field", "attachments=[]"},
+	} {
+		if err := Run(args); err == nil {
+			t.Fatalf("expected error for %v", args)
+		}
 	}
 }
 
-func TestMemoSetAttachmentsRejectsInvalidResourceName(t *testing.T) {
-	c := stubRunAPI(t)
-	err := Run([]string{"memo", "set-attachments", "memo1", "--attachment", "a"})
-	if err == nil {
-		t.Fatal("bare attachment ID should fail")
-	}
-	if c.method != "" {
-		t.Fatalf("invalid attachment name called API with method %q", c.method)
-	}
-}
-
-func TestResourceDryRunDoesNotCallAPI(t *testing.T) {
-	c := stubRunAPI(t)
-	if err := Run([]string{"memo", "delete", "abc", "--dry-run"}); err != nil {
-		t.Fatal(err)
-	}
-	if c.method != "" {
-		t.Fatalf("dry-run called API with method %q", c.method)
-	}
-}
-
-func TestResourceConfirmationPolicy(t *testing.T) {
-	c := stubRunAPI(t)
-	err := Run([]string{"memo", "delete", "abc"})
-	if err == nil {
-		t.Fatal("memo delete without --yes should fail")
-	}
-	var ce *cliError
-	if !errors.As(err, &ce) || ce.Code != "confirmation_required" {
-		t.Fatalf("error = %v, want confirmation_required", err)
-	}
-	if c.method != "" {
-		t.Fatalf("unconfirmed delete called API with method %q", c.method)
-	}
-
-	if err := Run([]string{"memo", "update", "abc", "--field", "content=x"}); err != nil {
-		t.Fatalf("high-frequency update should not require confirmation: %v", err)
+func TestResourceConfirmationAndDryRun(t *testing.T) {
+	for _, args := range [][]string{
+		{"memo", "delete", "abc"},
+		{"api", "DELETE", "/api/memos/abc"},
+		{"space", "remove-member", "x", "y"},
+		{"idp", "create"},
+		{"instance", "test-email"},
+	} {
+		c := stubRunAPI(t)
+		err := Run(args)
+		var ce *cliError
+		if !errors.As(err, &ce) || ce.Code != "confirmation_required" || c.method != "" {
+			t.Fatalf("confirmation policy for %v: %v", args, err)
+		}
+		if err := Run(append(args, "--dry-run")); err != nil || c.method != "" {
+			t.Fatalf("dry run for %v: %v", args, err)
+		}
 	}
 }
 
 func TestResourceCacheSyncPolicy(t *testing.T) {
 	c := stubRunAPI(t)
-	if err := Run([]string{"memo", "update", "abc", "--field", "content=x"}); err != nil {
-		t.Fatal(err)
+	if err := Run([]string{"memo", "update", "abc", "--field", "content=x"}); err != nil || !c.syncCache {
+		t.Fatalf("memo update sync: %v", err)
 	}
-	if !c.syncCache {
-		t.Fatal("memo update should sync the local memo cache")
-	}
-
 	c = stubRunAPI(t)
-	if err := Run([]string{"api", "PATCH", "/api/v1/memos/abc", "--field", "content=x", "--sync"}); err != nil {
-		t.Fatal(err)
+	if err := Run([]string{"api", "PATCH", "/api/memos/abc", "--field", "content=x", "--sync"}); err != nil || !c.syncCache {
+		t.Fatalf("api sync: %v", err)
 	}
-	if !c.syncCache {
-		t.Fatal("api --sync should sync the local memo cache")
-	}
-}
-
-func TestGenericAPIDeleteRequiresConfirmation(t *testing.T) {
-	c := stubRunAPI(t)
-	if err := Run([]string{"api", "DELETE", "/api/v1/memos/abc"}); err == nil {
-		t.Fatal("generic DELETE without --yes should fail")
-	}
-	if c.method != "" {
-		t.Fatalf("unconfirmed generic DELETE called API with method %q", c.method)
-	}
-	if err := Run([]string{"api", "DELETE", "/api/v1/memos/abc", "--yes"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestGenericAPIReadSharesDoesNotRequireConfirmation(t *testing.T) {
-	c := stubRunAPI(t)
-	if err := Run([]string{"api", "GET", "/api/v1/memos/abc/shares"}); err != nil {
-		t.Fatal(err)
-	}
-	if c.method != "GET" {
-		t.Fatalf("method = %q, want GET", c.method)
-	}
-}
-
-func TestResourceDryRunReportsExplicitSync(t *testing.T) {
-	if got := cachePolicy(true); got != "sync" {
-		t.Fatalf("cachePolicy(true) = %q, want sync", got)
+	c = stubRunAPI(t)
+	if err := Run([]string{"api", "GET", "/api/memos/abc/shares"}); err != nil || c.syncCache {
+		t.Fatalf("read shares: %v", err)
 	}
 }
 
 func TestUnknownVerbAndResource(t *testing.T) {
-	stubRunAPI(t)
-	if err := Run([]string{"memo", "bogus"}); err == nil {
-		t.Error("expected error for unknown memo verb")
-	}
-	if err := Run([]string{"nonsense"}); err == nil {
-		t.Error("expected error for unknown top-level command")
-	}
-}
-
-func TestResourceGroupNoVerbShowsUsage(t *testing.T) {
-	stubRunAPI(t)
-	// Calling a resource group with no verb returns a usage error (non-nil).
-	if err := Run([]string{"memo"}); err == nil {
-		t.Error("expected usage error when resource group called with no verb")
-	}
-}
-
-func TestMemoRelateRequiresTwoMemoUIDs(t *testing.T) {
-	if err := Run([]string{"memo", "relate", "source"}); err == nil {
-		t.Fatal("memo relate with one UID should fail")
-	}
-}
-
-func TestMemoResourceVerbsIncludeRelate(t *testing.T) {
-	for _, verb := range resourceVerbs("memo") {
-		if verb == "relate" {
-			return
+	for _, args := range [][]string{{"memo", "bogus"}, {"nonsense"}, {"memo"}, {"memo", "relate", "source"}} {
+		if err := Run(args); err == nil {
+			t.Fatalf("expected usage error for %v", args)
 		}
 	}
-	t.Fatal("memo resource verbs do not include relate")
-}
-
-func TestIsResourceGroup(t *testing.T) {
-	for _, g := range []string{"memo", "attachment", "user", "auth", "shortcut", "instance", "ai", "api"} {
+	for _, g := range []string{"memo", "attachment", "user", "auth", "view", "space", "idp", "instance", "ai", "api"} {
 		if !isResourceGroup(g) {
-			t.Errorf("isResourceGroup(%q) = false, want true", g)
+			t.Errorf("missing resource group %s", g)
 		}
 	}
-	for _, g := range []string{"search", "list", "get", "bogus"} {
-		if isResourceGroup(g) {
-			t.Errorf("isResourceGroup(%q) = true, want false", g)
-		}
+	if isResourceGroup("shortcut") {
+		t.Fatal("obsolete shortcut group still registered")
 	}
 }
 
 func TestCoerceJSON(t *testing.T) {
-	cases := []struct {
+	for _, tc := range []struct {
 		in   string
 		want any
-	}{
-		{"true", true},
-		{"42", float64(42)},
-		{`"quoted"`, "quoted"},
-		{"plain string", "plain string"},
-		{"null", nil},
-	}
-	for _, tc := range cases {
-		got := coerceJSON(tc.in)
-		if got != tc.want {
-			t.Errorf("coerceJSON(%q) = %v (%T), want %v (%T)", tc.in, got, got, tc.want, tc.want)
+	}{{"true", true}, {"42", float64(42)}, {`"quoted"`, "quoted"}, {"plain string", "plain string"}, {"null", nil}} {
+		if got := coerceJSON(tc.in); got != tc.want {
+			t.Errorf("coerceJSON(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }

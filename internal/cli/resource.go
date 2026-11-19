@@ -1,7 +1,7 @@
 package cli
 
 // This file implements the lark-cli-style "resource-group + verb" command
-// surface that gives memoq FULL coverage of the Memos v1 API. Where the
+// surface for the Memos 26.xx API. Where the
 // top-level quick commands (search/list/get/...) serve the fast local cache,
 // these resource commands talk to the server directly and print the raw JSON
 // response, so they always reflect the exact server contract regardless of the
@@ -21,10 +21,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"mime"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/example/memoq/internal/syncer"
@@ -67,9 +65,19 @@ var resourceGroupSpecs = []resourceGroupSpec{
 		Short: "Direct auth API commands",
 	},
 	{
-		Name:  "shortcut",
-		Use:   "shortcut <verb>",
-		Short: "Direct shortcut API commands",
+		Name:  "view",
+		Use:   "view <verb>",
+		Short: "Direct memo view API commands",
+	},
+	{
+		Name:  "space",
+		Use:   "space <verb>",
+		Short: "Direct space, member, and invitation API commands",
+	},
+	{
+		Name:  "idp",
+		Use:   "idp <verb>",
+		Short: "Direct identity provider API commands",
 	},
 	{
 		Name:  "instance",
@@ -137,6 +145,8 @@ type apiFlags struct {
 	yes      bool
 	sync     bool
 	asJSON   bool
+	output   string
+	stream   bool
 }
 
 func (f *apiFlags) register(fs *flag.FlagSet) {
@@ -148,6 +158,8 @@ func (f *apiFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.yes, "yes", false, "confirm destructive operation")
 	fs.BoolVar(&f.sync, "sync", false, "sync the local memo cache after success")
 	fs.BoolVar(&f.asJSON, "json", false, "emit JSON (resource commands always do)")
+	fs.StringVar(&f.output, "output", "", "write a GET response to a file")
+	fs.BoolVar(&f.stream, "stream", false, "stream a GET response to stdout")
 }
 
 // buildBody assembles the request body from --body / --body-file / --field.
@@ -301,72 +313,119 @@ type resourceVerbSpec struct {
 
 var resourceVerbSpecs = map[string][]resourceVerbSpec{
 	"memo": {
-		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/memos")),
-		verb("get", methodGet, argsOne, false, onePath("/api/v1/memos/", "")),
-		cacheVerb("create", methodPost, argsAny, true, false, fixedPath("/api/v1/memos")),
-		cacheVerb("update", methodPatch, argsOne, true, false, onePath("/api/v1/memos/", "")),
-		cacheVerb("delete", methodDelete, argsOne, false, true, onePath("/api/v1/memos/", "")),
-		verb("comments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/comments")),
-		verb("comment", methodPost, argsOne, true, onePath("/api/v1/memos/", "/comments")),
-		verb("relations", methodGet, argsOne, false, onePath("/api/v1/memos/", "/relations")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/memos")),
+		verb("get", methodGet, argsOne, false, onePath("/api/memos/", "")),
+		cacheVerb("create", methodPost, argsAny, true, false, fixedPath("/api/memos")),
+		cacheVerb("update", methodPatch, argsOne, true, false, onePath("/api/memos/", "")),
+		cacheVerb("delete", methodDelete, argsOne, false, true, onePath("/api/memos/", "")),
+		verb("comments", methodGet, argsOne, false, onePath("/api/memos/", "/comments")),
+		verb("comment", methodPost, argsOne, true, onePath("/api/memos/", "/comments")),
+		verb("relations", methodGet, argsOne, false, onePath("/api/memos/", "/relations")),
 		handlerVerb("relate", cmdMemoRelate),
-		verb("set-relations", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/relations")),
-		verb("reactions", methodGet, argsOne, false, onePath("/api/v1/memos/", "/reactions")),
-		verb("react", methodPost, argsOne, true, onePath("/api/v1/memos/", "/reactions")),
-		dangerousVerb("unreact", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/reactions/", "")),
-		verb("attachments", methodGet, argsOne, false, onePath("/api/v1/memos/", "/attachments")),
-		verb("set-attachments", methodPatch, argsOne, true, onePath("/api/v1/memos/", "/attachments")),
-		verb("shares", methodGet, argsOne, false, onePath("/api/v1/memos/", "/shares")),
-		dangerousVerb("share", methodPost, argsOne, true, onePath("/api/v1/memos/", "/shares")),
-		dangerousVerb("unshare", methodDelete, argsTwo, false, twoPath("/api/v1/memos/", "/shares/", "")),
-		verb("link-metadata", methodGet, argsAny, false, fixedPath("/api/v1/memos/-/linkMetadata")),
+		verb("set-relations", methodPatch, argsOne, true, onePath("/api/memos/", "/relations")),
+		verb("reactions", methodGet, argsOne, false, onePath("/api/memos/", "/reactions")),
+		verb("react", methodPost, argsOne, true, onePath("/api/memos/", "/reactions")),
+		dangerousVerb("unreact", methodDelete, argsTwo, false, twoPath("/api/memos/", "/reactions/", "")),
+		verb("attachments", methodGet, argsOne, false, onePath("/api/memos/", "/attachments")),
+		verb("set-attachments", methodPatch, argsOne, true, onePath("/api/memos/", "/attachments")),
+		verb("shares", methodGet, argsOne, false, onePath("/api/memos/", "/shares")),
+		dangerousVerb("share", methodPost, argsOne, true, onePath("/api/memos/", "/shares")),
+		dangerousVerb("unshare", methodDelete, argsTwo, false, twoPath("/api/memos/", "/shares/", "")),
+		verb("shared", methodGet, argsOne, false, onePath("/api/shares/", "/memo")),
+		verb("link-metadata", methodGet, argsAny, false, fixedPath("/api/memos/-/linkMetadata")),
+		verb("batch-link-metadata", methodPost, argsAny, true, fixedPath("/api/memos/-/linkMetadata:batchGet")),
 	},
 	"attachment": {
 		handlerVerb("pull", cmdAttachmentPull),
-		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/attachments")),
-		verb("get", methodGet, argsOne, false, onePath("/api/v1/attachments/", "")),
-		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/attachments")),
-		verb("update", methodPatch, argsOne, true, onePath("/api/v1/attachments/", "")),
-		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/v1/attachments/", "")),
-		dangerousVerb("batch-delete", methodPost, argsAny, true, fixedPath("/api/v1/attachments:batchDelete")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/attachments")),
+		verb("get", methodGet, argsOne, false, onePath("/api/attachments/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/attachments")),
+		verb("upload", methodPost, argsAny, true, fixedPath("/api/attachments:upload")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/attachments/", "")),
+		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/attachments/", "")),
+		dangerousVerb("batch-delete", methodPost, argsAny, true, fixedPath("/api/attachments:batchDelete")),
 	},
 	"user": {
-		verb("list", methodGet, argsAny, false, fixedPath("/api/v1/users")),
-		verb("get", methodGet, argsOne, false, onePath("/api/v1/users/", "")),
-		verb("create", methodPost, argsAny, true, fixedPath("/api/v1/users")),
-		verb("update", methodPatch, argsOne, true, onePath("/api/v1/users/", "")),
-		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/v1/users/", "")),
-		verb("all-stats", methodGet, argsAny, false, fixedPath("/api/v1/users:stats")),
-		verb("stats", methodGet, argsOne, false, onePath("/api/v1/users/", ":getStats")),
-		verb("settings", methodGet, argsOne, false, onePath("/api/v1/users/", "/settings")),
-		verb("setting", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/settings/", "")),
-		dangerousVerb("update-setting", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/settings/", "")),
-		verb("tokens", methodGet, argsOne, false, onePath("/api/v1/users/", "/personalAccessTokens")),
-		verb("create-token", methodPost, argsOne, true, onePath("/api/v1/users/", "/personalAccessTokens")),
-		dangerousVerb("delete-token", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/personalAccessTokens/", "")),
-		verb("webhooks", methodGet, argsOne, false, onePath("/api/v1/users/", "/webhooks")),
+		verb("list", methodGet, argsAny, false, fixedPath("/api/users")),
+		verb("batch-get", methodPost, argsAny, true, fixedPath("/api/users:batchGet")),
+		verb("get", methodGet, argsOne, false, onePath("/api/users/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/users")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/users/", "")),
+		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/users/", "")),
+		verb("all-stats", methodGet, argsAny, false, fixedPath("/api/users/-/stats")),
+		verb("list-stats", methodGet, argsOne, false, onePath("/api/users/", "/stats")),
+		verb("stats", methodGet, argsOne, false, onePath("/api/users/", ":getStats")),
+		verb("usage", methodGet, argsOne, false, onePath("/api/users/", "/usage")),
+		verb("settings", methodGet, argsOne, false, onePath("/api/users/", "/settings")),
+		verb("setting", methodGet, argsTwo, false, twoPath("/api/users/", "/settings/", "")),
+		dangerousVerb("update-setting", methodPatch, argsTwo, true, twoPath("/api/users/", "/settings/", "")),
+		verb("tokens", methodGet, argsOne, false, onePath("/api/users/", "/personalAccessTokens")),
+		verb("create-token", methodPost, argsOne, true, onePath("/api/users/", "/personalAccessTokens")),
+		dangerousVerb("delete-token", methodDelete, argsTwo, false, twoPath("/api/users/", "/personalAccessTokens/", "")),
+		verb("webhooks", methodGet, argsOne, false, onePath("/api/users/", "/webhooks")),
+		verb("create-webhook", methodPost, argsOne, true, onePath("/api/users/", "/webhooks")),
+		verb("update-webhook", methodPatch, argsTwo, true, twoPath("/api/users/", "/webhooks/", "")),
+		dangerousVerb("delete-webhook", methodDelete, argsTwo, false, twoPath("/api/users/", "/webhooks/", "")),
+		verb("webhook-secret", methodGet, argsTwo, false, twoPath("/api/users/", "/webhooks/", ":getSigningSecret")),
+		verb("notifications", methodGet, argsOne, false, onePath("/api/users/", "/notifications")),
+		verb("update-notification", methodPatch, argsTwo, true, twoPath("/api/users/", "/notifications/", "")),
+		dangerousVerb("delete-notification", methodDelete, argsTwo, false, twoPath("/api/users/", "/notifications/", "")),
+		verb("identities", methodGet, argsOne, false, onePath("/api/users/", "/linkedIdentities")),
+		verb("identity", methodGet, argsTwo, false, twoPath("/api/users/", "/linkedIdentities/", "")),
+		verb("link-identity", methodPost, argsOne, true, onePath("/api/users/", "/linkedIdentities")),
+		dangerousVerb("unlink-identity", methodDelete, argsTwo, false, twoPath("/api/users/", "/linkedIdentities/", "")),
+		verb("invitations", methodGet, argsOne, false, onePath("/api/users/", "/spaceInvitations")),
+		dangerousVerb("import-memos", methodPost, argsOne, true, onePath("/api/users/", ":importMemos")),
+		verb("export-memos", methodGet, argsOne, false, onePath("/file/users/", "/export")),
 	},
 	"auth": {
-		aliasVerb([]string{"me", "status"}, methodGet, argsAny, false, fixedPath("/api/v1/auth/me")),
-		verb("signin", methodPost, argsAny, true, fixedPath("/api/v1/auth/signin")),
-		verb("signout", methodPost, argsAny, false, fixedPath("/api/v1/auth/signout")),
-		verb("refresh", methodPost, argsAny, true, fixedPath("/api/v1/auth/refresh")),
+		aliasVerb([]string{"me", "status"}, methodGet, argsAny, false, fixedPath("/api/auth/me")),
+		verb("signin", methodPost, argsAny, true, fixedPath("/api/auth/signin")),
+		verb("signout", methodPost, argsAny, false, fixedPath("/api/auth/signout")),
+		verb("refresh", methodPost, argsAny, true, fixedPath("/api/auth/refresh")),
 	},
-	"shortcut": {
-		verb("list", methodGet, argsOne, false, onePath("/api/v1/users/", "/shortcuts")),
-		verb("get", methodGet, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
-		verb("create", methodPost, argsOne, true, onePath("/api/v1/users/", "/shortcuts")),
-		verb("update", methodPatch, argsTwo, true, twoPath("/api/v1/users/", "/shortcuts/", "")),
-		dangerousVerb("delete", methodDelete, argsTwo, false, twoPath("/api/v1/users/", "/shortcuts/", "")),
+	"view": {
+		verb("list", methodGet, argsOne, false, onePath("/api/users/", "/views")),
+		verb("get", methodGet, argsTwo, false, twoPath("/api/users/", "/views/", "")),
+		verb("create", methodPost, argsOne, true, onePath("/api/users/", "/views")),
+		verb("update", methodPatch, argsTwo, true, twoPath("/api/users/", "/views/", "")),
+		dangerousVerb("delete", methodDelete, argsTwo, false, twoPath("/api/users/", "/views/", "")),
+	},
+	"space": {
+		verb("list", methodGet, argsAny, false, fixedPath("/api/spaces")),
+		verb("get", methodGet, argsOne, false, onePath("/api/spaces/", "")),
+		verb("create", methodPost, argsAny, true, fixedPath("/api/spaces")),
+		verb("update", methodPatch, argsOne, true, onePath("/api/spaces/", "")),
+		cacheVerb("delete", methodDelete, argsOne, false, true, onePath("/api/spaces/", "")),
+		verb("members", methodGet, argsOne, false, onePath("/api/spaces/", "/members")),
+		verb("member", methodGet, argsTwo, false, twoPath("/api/spaces/", "/members/", "")),
+		dangerousVerb("update-member", methodPatch, argsTwo, true, twoPath("/api/spaces/", "/members/", "")),
+		dangerousVerb("remove-member", methodDelete, argsTwo, false, twoPath("/api/spaces/", "/members/", "")),
+		verb("invitations", methodGet, argsOne, false, onePath("/api/spaces/", "/invitations")),
+		verb("invitation", methodGet, argsTwo, false, twoPath("/api/spaces/", "/invitations/", "")),
+		verb("invite", methodPost, argsOne, true, onePath("/api/spaces/", "/invitations")),
+		dangerousVerb("revoke-invitation", methodDelete, argsTwo, false, twoPath("/api/spaces/", "/invitations/", "")),
+		verb("accept-invitation", methodPost, argsTwo, true, twoPath("/api/spaces/", "/invitations/", ":accept")),
+		dangerousVerb("decline-invitation", methodPost, argsTwo, true, twoPath("/api/spaces/", "/invitations/", ":decline")),
+	},
+	"idp": {
+		verb("list", methodGet, argsAny, false, fixedPath("/api/identity-providers")),
+		verb("get", methodGet, argsOne, false, onePath("/api/identity-providers/", "")),
+		dangerousVerb("create", methodPost, argsAny, true, fixedPath("/api/identity-providers")),
+		dangerousVerb("update", methodPatch, argsOne, true, onePath("/api/identity-providers/", "")),
+		dangerousVerb("delete", methodDelete, argsOne, false, onePath("/api/identity-providers/", "")),
 	},
 	"instance": {
-		verb("profile", methodGet, argsAny, false, fixedPath("/api/v1/instance/profile")),
-		verb("setting", methodGet, argsOptionalOne, false, optionalOnePath("/api/v1/instance/settings", "/api/v1/instance/settings/")),
-		dangerousVerb("update-setting", methodPatch, argsOne, true, onePath("/api/v1/instance/settings/", "")),
-		verb("stats", methodGet, argsAny, false, fixedPath("/api/v1/instance/stats")),
+		verb("profile", methodGet, argsAny, false, fixedPath("/api/instance/profile")),
+		verb("setting", methodGet, argsOne, false, onePath("/api/instance/settings/", "")),
+		verb("batch-settings", methodPost, argsAny, true, fixedPath("/api/instance/settings:batchGet")),
+		dangerousVerb("update-setting", methodPatch, argsOne, true, onePath("/api/instance/settings/", "")),
+		dangerousVerb("test-email", methodPost, argsAny, true, fixedPath("/api/instance/settings/notification:testEmail")),
+		verb("stats", methodGet, argsAny, false, fixedPath("/api/instance/stats")),
+		verb("configuration", methodGet, argsAny, false, fixedPath("/api/instance/configuration")),
 	},
 	"ai": {
-		verb("transcribe", methodPost, argsAny, true, fixedPath("/api/v1/ai:transcribe")),
+		verb("transcribe", methodPost, argsAny, true, fixedPath("/api/ai:transcribe")),
 	},
 }
 
@@ -426,9 +485,18 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 	af := &apiFlags{}
 	af.register(fs)
 	var uploadFile string
+	var uploadMemo, replaceAttachment, conflictPolicy string
+	var validateOnly bool
 	var attachmentNames multiFlag
-	if resource == "attachment" && name == "create" {
+	if resource == "attachment" && (name == "create" || name == "upload") {
 		fs.StringVar(&uploadFile, "file", "", "local file to upload")
+		fs.StringVar(&uploadMemo, "memo", "", "memo resource name to attach the file to")
+		fs.StringVar(&replaceAttachment, "replace", "", "replace an attachment's content (26.11.1+; requires --yes)")
+	}
+	if resource == "user" && name == "import-memos" {
+		fs.StringVar(&uploadFile, "file", "", "Memos export archive to import")
+		fs.StringVar(&conflictPolicy, "conflict-policy", "SKIP", "SKIP, REPLACE, or DUPLICATE")
+		fs.BoolVar(&validateOnly, "validate-only", false, "upload and validate without importing")
 	}
 	if resource == "memo" && name == "set-attachments" {
 		fs.Var(&attachmentNames, "attachment", "attachment resource name (repeatable)")
@@ -440,27 +508,28 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 	if err := validateResourceArgs(resource, name, spec.Args, pos); err != nil {
 		return err
 	}
+	if uploadFile != "" {
+		path := spec.Path(pos)
+		if resource == "attachment" {
+			path = "/api/attachments:upload"
+		}
+		if len(af.queries) > 0 || af.output != "" || af.stream {
+			return fmt.Errorf("file uploads do not support --query, --output, or --stream")
+		}
+		if resource == "user" && conflictPolicy != "SKIP" && conflictPolicy != "REPLACE" && conflictPolicy != "DUPLICATE" {
+			return fmt.Errorf("conflict-policy must be SKIP, REPLACE, or DUPLICATE")
+		}
+		return runFileUpload(resource, name, path, uploadFile, uploadMemo, replaceAttachment, conflictPolicy, validateOnly, af)
+	}
+	if uploadMemo != "" || replaceAttachment != "" || validateOnly {
+		return fmt.Errorf("--memo, --replace, and --validate-only require --file")
+	}
+	if resource == "user" && name == "export-memos" && af.output == "" && !af.stream {
+		return fmt.Errorf("export-memos requires --output <file> or --stream")
+	}
 	var body any
 	if spec.Body {
 		switch {
-		case uploadFile != "":
-			if af.hasBodyInput() {
-				return fmt.Errorf("--file cannot be combined with --body, --body-file, or --field")
-			}
-			content, readErr := os.ReadFile(uploadFile)
-			if readErr != nil {
-				return fmt.Errorf("read attachment file %q: %w", uploadFile, readErr)
-			}
-			filename := filepath.Base(uploadFile)
-			contentType := mime.TypeByExtension(filepath.Ext(filename))
-			if contentType == "" {
-				contentType = "application/octet-stream"
-			}
-			body = map[string]any{
-				"filename": filename,
-				"type":     contentType,
-				"content":  content,
-			}
 		case len(attachmentNames) > 0:
 			if af.hasBodyInput() {
 				return fmt.Errorf("--attachment cannot be combined with --body, --body-file, or --field")
@@ -495,6 +564,12 @@ func runResourceVerbSpec(resource, name string, args []string, spec resourceVerb
 	}
 	if spec.Confirm && !af.yes {
 		return confirmationRequired(resource + " " + name)
+	}
+	if af.output != "" || af.stream {
+		if spec.Method != methodGet {
+			return fmt.Errorf("--output and --stream require GET")
+		}
+		return runAPIOutput(path, af)
 	}
 	return runAPI(spec.Method, path, body, spec.SyncMemoCache || af.sync)
 }
@@ -558,8 +633,8 @@ func cmdAPI(args []string) error {
 	}
 	if len(pos) < 2 {
 		return fmt.Errorf("usage: memoq api <METHOD> <PATH> [--body '{...}'] [--field k=v] [--query k=v]\n" +
-			"  e.g. memoq api GET /api/v1/memos --query pageSize=10\n" +
-			"       memoq api POST /api/v1/memos --field content='hi' --field visibility=PRIVATE")
+			"  e.g. memoq api GET /api/memos --query pageSize=10\n" +
+			"       memoq api POST /api/memos --field content='hi' --field visibility=PRIVATE")
 	}
 	method := strings.ToUpper(pos[0])
 	path := pos[1]
@@ -585,6 +660,12 @@ func cmdAPI(args []string) error {
 	if requiresAPIConfirmation(method, path) && !af.yes {
 		return confirmationRequired(method + " " + path)
 	}
+	if af.output != "" || af.stream {
+		if method != methodGet {
+			return fmt.Errorf("--output and --stream require GET")
+		}
+		return runAPIOutput(path, &af)
+	}
 	return runAPI(method, path, body, af.sync)
 }
 
@@ -599,9 +680,12 @@ func requiresAPIConfirmation(method, path string) bool {
 	if method == methodDelete {
 		return true
 	}
-	if method == methodPost && (strings.Contains(path, ":batchDelete") || strings.Contains(path, "/shares")) {
+	if method == methodPost && (strings.Contains(path, ":batchDelete") || strings.Contains(path, "/shares") ||
+		strings.Contains(path, ":importMemos") || strings.Contains(path, ":testEmail") ||
+		strings.Contains(path, ":decline") || strings.HasPrefix(path, "/api/identity-providers")) {
 		return true
 	}
 	return method == methodPatch &&
-		(strings.Contains(path, "/instance/settings/") || strings.Contains(path, "/users/") && strings.Contains(path, "/settings/"))
+		(strings.Contains(path, "/instance/settings/") || strings.Contains(path, "/users/") && strings.Contains(path, "/settings/") ||
+			strings.Contains(path, "/spaces/") && strings.Contains(path, "/members/") || strings.HasPrefix(path, "/api/identity-providers"))
 }

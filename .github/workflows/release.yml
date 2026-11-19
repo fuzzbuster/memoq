@@ -64,9 +64,21 @@ jobs:
           fi
           shasum -a 256 "${asset}".* > "${asset}.sha256"
 
+      - name: Read release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          awk -v heading="## [${RELEASE_TAG#v}]" '
+            /^## \[/ { if (found) exit; found = index($0, heading) == 1; next }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > dist/release-notes.md
+          test -s dist/release-notes.md
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/release-notes.md
           files: |
             dist/*.tar.gz
             dist/*.zip

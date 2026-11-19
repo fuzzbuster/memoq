@@ -51,7 +51,7 @@ func TestNew_TrimsTrailingSlash(t *testing.T) {
 
 func TestDo_SetsHeadersAndReturnsRawJSON(t *testing.T) {
 	c, cap := mockServer(t, 200, `{"hello":"world"}`)
-	raw, err := c.Do(context.Background(), http.MethodGet, "/api/v1/memos", nil)
+	raw, err := c.Do(context.Background(), http.MethodGet, "/api/memos", nil)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -64,14 +64,14 @@ func TestDo_SetsHeadersAndReturnsRawJSON(t *testing.T) {
 	if cap.accept != "application/json" {
 		t.Errorf("Accept = %q", cap.accept)
 	}
-	if cap.method != "GET" || cap.path != "/api/v1/memos" {
+	if cap.method != "GET" || cap.path != "/api/memos" {
 		t.Errorf("request = %s %s", cap.method, cap.path)
 	}
 }
 
 func TestDo_SendsBodyAndContentType(t *testing.T) {
 	c, cap := mockServer(t, 200, `{}`)
-	_, err := c.Do(context.Background(), http.MethodPost, "/api/v1/memos", map[string]any{"content": "hi"})
+	_, err := c.Do(context.Background(), http.MethodPost, "/api/memos", map[string]any{"content": "hi"})
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -138,6 +138,9 @@ func TestListAll_FollowsPagination(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page++
+		if r.URL.Path != "/api/memos" || r.URL.Query().Get("state") != "NORMAL" {
+			t.Errorf("cache list request = %s", r.URL.RequestURI())
+		}
 		switch r.URL.Query().Get("pageToken") {
 		case "":
 			_, _ = w.Write([]byte(`{"memos":[{"uid":"a"},{"uid":"b"}],"nextPageToken":"tok2"}`))
@@ -219,7 +222,7 @@ func TestGet(t *testing.T) {
 	if m.Content != "note" {
 		t.Errorf("content = %q", m.Content)
 	}
-	if cap.path != "/api/v1/memos/xyz" {
+	if cap.path != "/api/memos/xyz" {
 		t.Errorf("path = %q", cap.path)
 	}
 }
@@ -278,7 +281,7 @@ func TestDelete(t *testing.T) {
 	if err := c.Delete(context.Background(), "gone"); err != nil {
 		t.Fatal(err)
 	}
-	if cap.method != "DELETE" || cap.path != "/api/v1/memos/gone" {
+	if cap.method != "DELETE" || cap.path != "/api/memos/gone" {
 		t.Errorf("request = %s %s", cap.method, cap.path)
 	}
 }
@@ -289,8 +292,8 @@ func TestPing_HitsAuthMe(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Regression guard for the upstream drift fix: must be /auth/me, not /auth/status.
-	if cap.path != "/api/v1/auth/me" {
-		t.Errorf("Ping path = %q, want /api/v1/auth/me", cap.path)
+	if cap.path != "/api/auth/me" {
+		t.Errorf("Ping path = %q, want /api/auth/me", cap.path)
 	}
 }
 
@@ -406,8 +409,8 @@ func TestCreateAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAttachment: %v", err)
 	}
-	if cap.method != http.MethodPost || cap.path != "/api/v1/attachments" {
-		t.Errorf("request = %s %s, want POST /api/v1/attachments", cap.method, cap.path)
+	if cap.method != http.MethodPost || cap.path != "/api/attachments" {
+		t.Errorf("request = %s %s, want POST /api/attachments", cap.method, cap.path)
 	}
 	var body map[string]string
 	if err := json.Unmarshal([]byte(cap.body), &body); err != nil {
@@ -451,8 +454,8 @@ func TestListMemoAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListMemoAttachments: %v", err)
 	}
-	if cap.method != http.MethodGet || cap.path != "/api/v1/memos/m1/attachments" {
-		t.Errorf("request = %s %s, want GET /api/v1/memos/m1/attachments", cap.method, cap.path)
+	if cap.method != http.MethodGet || cap.path != "/api/memos/m1/attachments" {
+		t.Errorf("request = %s %s, want GET /api/memos/m1/attachments", cap.method, cap.path)
 	}
 	if len(atts) != 2 {
 		t.Fatalf("got %d attachments, want 2", len(atts))

@@ -1,15 +1,6 @@
 ---
 name: memoq
-description: >
-  Query and manage a personal Memos knowledge base from the command line via the
-  `memoq` CLI — a non-interactive, scriptable tool built for coding agents (no TUI,
-  no chat/MCP/LLM subcommands). Use when the user asks to search / list / read /
-  create / update / delete their notes or memos, upload / download / associate memo
-  attachments, look up something they "wrote down before", or persist a note for
-  later. Every read command supports `--json` for machine parsing and auto-syncs from
-  the remote Memos server so results are fresh. Trigger on: "search my notes",
-  "查一下我记的笔记/备忘", "记一条备忘", "把这个存到 memos",
-  "attach this file to my memo", "download the memo attachment".
+description: Manage Memos notes with memoq. Use when searching, reading, writing, importing or exporting notes, managing spaces, or uploading and downloading memo attachments.
 ---
 
 # memoq — Memos CLI for coding agents
@@ -17,6 +8,10 @@ description: >
 `memoq` is a slim, non-interactive CLI over a personal [Memos](https://github.com/usememos/memos)
 server. It keeps a local SQLite cache (with FTS5 full-text search) and lazily syncs
 from the remote server on read, so queries are fast and always reasonably fresh.
+
+Require Memos 26.10.0 or later. Use `/api/` paths and username resource IDs.
+Read [the endpoint manifest](../../docs/ENDPOINTS.md) when constructing bodies
+for a resource operation; it documents all 93 RPC mappings and body selectors.
 
 **It is script-only.** There is no interactive prompt, no TUI, no chat/agent loop, and
 no MCP server. Never wait for user input from a `memoq` process — every command runs to
@@ -37,6 +32,19 @@ memoq config set auto_sync_ttl_seconds 30   # optional; 0 disables read-time aut
 - `memoq config path` prints the config file and DB file locations.
 - `memoq config list` dumps the current config as JSON (the token is masked).
 - Data lives under `$MEMOQ_HOME` (default `~/.memoq`).
+
+If using a session instead of a PAT, leave the configured token empty:
+
+```bash
+memoq auth signin --body '{"passwordCredentials":{"username":"alice","password":"..."}}'
+memoq auth refresh
+memoq auth me
+memoq auth signout
+```
+
+Sign-in and refresh persist the access token and refresh cookie in `0600`
+`session.json`, scoped to the server. A configured PAT takes precedence.
+Refresh explicitly when the access token expires.
 
 If a read command prints `memoq: auto-sync skipped (...)` to **stderr**, that is
 non-fatal: the network/auth failed but the local cache is still served. Only treat a
@@ -109,8 +117,8 @@ echo "multi-line body" | memoq create --tag inbox
   server indexes it. `--visibility` defaults to `PRIVATE`.
 - `--attach <path>` is repeatable. Each local file is uploaded and associated directly with
   the newly created memo, in argument order.
-- Uploads use Memos' JSON bytes field (base64), not multipart. File size is limited by the
-  Memos instance setting; its server-side default is 32 MiB when no limit is configured.
+- File uploads use bounded base64 chunks. File size remains subject to the
+  server's USAGE_LIMITS and upload-session limits.
 - If an upload fails after memo creation, the error includes the created memo UID. The memo
   is retained and already-uploaded attachments are not rolled back.
 - Prints `created <uid>` (or `{"uid": "...", "attachments": [...]}` with `--json`).
@@ -183,7 +191,7 @@ Debug output goes to **stderr**, so do not parse it as command JSON.
 ```bash
 MEMOQ_HTTP_DEBUG=headers memoq memo list --query pageSize=10
 MEMOQ_HTTP_DEBUG=trace memoq sync --json
-MEMOQ_HTTP_DEBUG=dump memoq api GET /api/v1/auth/me
+MEMOQ_HTTP_DEBUG=dump memoq api GET /api/auth/me
 ```
 
 Supported modes:
@@ -200,11 +208,11 @@ not dump response bodies.
 
 ## Full-API resource commands
 
-Beyond the fast local-cache commands above, `memoq` exposes the **entire** Memos v1 REST
+Beyond the fast local-cache commands above, `memoq` exposes the Memos 26.xx REST
 API through a lark-cli-style `resource-group + verb` surface. These commands talk to the
 server directly and print the pretty-printed JSON response verbatim — use them when the
 cache-backed commands don't cover what you need (comments, reactions, attachments, users,
-shortcuts, instance settings, AI transcription, etc.).
+views, spaces, identity providers, instance settings, AI transcription, etc.).
 
 Body / query flags shared by every resource verb:
 
@@ -234,8 +242,8 @@ memoq memo relations <uid>
 memoq memo relate <uid> <related-uid>
 memoq memo set-relations <uid> --body '<full replacement JSON>'
 memoq memo reactions <uid>
-memoq memo react <uid> --field reactionType=THUMBS_UP
-memoq memo unreact <uid> <reactionID>
+memoq memo react <uid> --body '{"reaction":{"reactionType":"👍"}}'
+memoq memo unreact <uid> <reactionID> --yes
 memoq memo attachments <uid> --json
 memoq memo set-attachments <uid> --attachment attachments/1
 memoq memo shares <uid>
@@ -249,32 +257,55 @@ memoq attachment batch-delete --body '{"names":["attachments/1"]}'
 memoq attachment pull <memo-uid>   # download blobs locally (see Attachments below)
 
 memoq user list
-memoq user get me            # 'me' resolves to the authenticated user
+memoq user get alice         # user IDs are usernames; auth me returns the current user
 memoq user stats <id>        # per-user stats (custom verb :getStats)
-memoq user all-stats         # stats across all users (users:stats)
+memoq user all-stats         # stats across all users (users/-/stats)
 memoq user settings <id>     # list a user's settings
 memoq user setting <id> <key>
 memoq user tokens <id>       # personal access tokens
 
 memoq auth me                # who am I / is the token valid
-memoq shortcut list <user>
-memoq instance profile       # server version + config
-memoq instance setting
+memoq view list <username>
+memoq instance profile       # server version and access metadata
+memoq instance setting GENERAL
+memoq instance batch-settings --body '{"names":["instance/settings/GENERAL"]}'
 memoq instance stats
 memoq ai transcribe --field <...>
 ```
 
 Use `memo relate` to add a `REFERENCE` between memos. It preserves existing
-relations and uses the object-based relation format from Memos `v0.30.0`.
-`memo set-relations` replaces the complete relation set; use it only when an
+outgoing references. Incoming references and immutable COMMENT relations are
+excluded from the replacement request.
+`memo set-relations` replaces outgoing references; use it only when an
 exact body is already available.
 
-`attachment create --file <path>` reads and uploads the local file without
-manual base64. To associate uploaded attachments with an existing memo, repeat
+`attachment create --file <path>` and `attachment upload --file <path>` upload
+bounded chunks without manual base64. Use `--memo <uid>` to attach directly.
+On 26.11.1+, `--replace <attachment-id> --yes` replaces content while preserving
+the attachment name and owning memo; older servers are rejected before upload.
+Use `attachment pull --force` to refresh a previously downloaded replacement.
+To associate uploaded attachments with an existing memo, repeat
 `--attachment attachments/<id>` on `memo set-attachments`; this replaces the
 complete set. Use `--body '{"attachments":[]}'` to clear it.
 
 Run `memoq <resource> --help` (for example, `memoq user --help`) to print its verb list.
+
+For collaboration, use `space` for spaces, members, and invitations, and `view`
+for saved filters. `user` includes notifications, webhook management, identities,
+and usage. `idp` manages OAuth2 providers. Refer to the endpoint manifest for
+their request-body shapes and required update masks.
+
+```bash
+memoq user export-memos alice --output ./memos.zip
+memoq user import-memos alice --file ./memos.zip --validate-only
+memoq user import-memos alice --file ./memos.zip --conflict-policy SKIP --yes
+memoq api GET /api/sse --stream
+```
+
+Export requires an instance administrator. Import's default is SKIP; REPLACE
+updates conflicts and DUPLICATE creates fresh UIDs. Inspect `report.failed` and
+`report.failures` for partial results. Use `--output <file>` for binary GET
+responses; `--stream` runs until interrupted.
 
 > **Endpoint reference:** the exact method+path each verb targets is documented
 > in `docs/ENDPOINTS.md`; the process for tracking upstream API changes is in
@@ -285,20 +316,24 @@ Run `memoq <resource> --help` (for example, `memoq user --help`) to print its ve
 For any endpoint not wrapped by a named verb (or added by a newer server), use `api`:
 
 ```bash
-memoq api GET  /api/v1/memos --query pageSize=10
-memoq api POST /api/v1/memos --field content='hello' --field visibility=PRIVATE
-memoq api PATCH /api/v1/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
-memoq api DELETE /api/v1/memos/<uid> --dry-run
-memoq api DELETE /api/v1/memos/<uid> --yes
+memoq api GET  /api/memos --query pageSize=10
+memoq api POST /api/memos --field content='hello' --field visibility=PRIVATE
+memoq api PATCH /api/memos/<uid> --body '{"pinned":true}' --query updateMask=pinned --sync
+memoq api DELETE /api/memos/<uid> --dry-run
+memoq api DELETE /api/memos/<uid> --yes
 ```
 
 `api <METHOD> <PATH>` reaches every current or future endpoint. Prefer the named verbs
 for readability; fall back to `api` for anything exotic.
 
 **Cache policy:** `memo create`, `memo update`, and `memo delete` sync the local memo
-cache after success. Other resource commands leave it unchanged. Generic `api` calls
+cache after success. Space deletion and completed imports also sync; other
+resource commands sync when `--sync` is supplied. Generic `api` calls
 only sync when `--sync` is supplied. If stderr says the remote write succeeded but
 the local cache is stale, do not retry the write; run `memoq sync` instead.
+
+The cache contains readable active non-comment memos. Use direct resource
+commands for archived memos, comments, space/creator metadata, and server filters.
 
 ## Agent guidance
 
@@ -314,7 +349,7 @@ the local cache is stale, do not retry the write; run `memoq sync` instead.
    `get` misses a just-created note, run `memoq sync` and retry.
 7. **Pick the right tier**: for ordinary note search/list/read/write, use the fast
    local-cache commands (they auto-sync and are cache-backed). For anything the cache
-   doesn't model — comments, reactions, attachments, users, shortcuts, instance settings,
+   doesn't model — comments, reactions, attachments, users, views, spaces, instance settings,
    AI transcription — use the resource commands (`memoq <group> <verb>`), and for exotic or
    newer endpoints use `memoq api <METHOD> <PATH>`. Resource/`api` output is raw JSON;
    parse it directly.

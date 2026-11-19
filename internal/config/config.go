@@ -28,6 +28,7 @@ type Config struct {
 type Paths struct {
 	Home           string // ~/.memoq
 	ConfigFile     string // ~/.memoq/config.json
+	SessionFile    string // ~/.memoq/session.json
 	DBFile         string // ~/.memoq/memoq.db
 	AttachmentsDir string // ~/.memoq/attachments
 }
@@ -46,6 +47,7 @@ func ResolvePaths() (*Paths, error) {
 	return &Paths{
 		Home:           home,
 		ConfigFile:     filepath.Join(home, "config.json"),
+		SessionFile:    filepath.Join(home, "session.json"),
 		DBFile:         filepath.Join(home, "memoq.db"),
 		AttachmentsDir: filepath.Join(home, "attachments"),
 	}, nil
